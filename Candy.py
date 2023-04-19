@@ -42,25 +42,17 @@ class Function():
 
 def get_py_type_check_func(_Type: type) -> bool: return lambda obj: type(obj) == _Type
 
-@dataclass(frozen=True)    
-class StatementStack():
-    colRange: Tuple[int, int]
-    depth: int
-
-class StatementStackSet():
-    def __init__(self) -> None: self.stacks: List[StatementStack] = []
-    def lookat(self, colRange: Tuple[int, int]) -> None: depth = self.last.depth; self.enter(StatementStack(colRange, depth))
-    def enter(self, newStack: StatementStack) -> None: self.stacks.append(newStack)
-    def exit(self) -> None: self.stacks.pop()
-    @property
-    def last(self) -> StatementStack: return self.stacks[-1]
-    @property
-    def history(self) -> Tuple[StatementStack]: return tuple(self.stacks)
 
 @dataclass(frozen=True)
+class ColRange():
+    start: int
+    end: int
+
+@dataclass()
 class Stack():
     loc: str # file
     line: int
+    col: ColRange
 
 class StackSet():
     def __init__(self) -> None: self.stacks: List[Stack] = []
@@ -73,15 +65,15 @@ class StackSet():
 
 
 class __EvalException(Exception):
-    def __init__(self, exception: Exception, stack: StatementStackSet) -> None:
+    def __init__(self, exception: Exception, col: ColRange) -> None:
         self.exception = exception
-        self.curStack = stack
+        self.col = col
 
 class HandledException(Exception):
     def __init__(self, exception: "__EvalException", stack: StackSet) -> None:
         self.exception = exception.exception
         self.stack = stack
-        self.colStack = exception.curStack
+        self.col = exception.col
 
 class CodeType(Enum):
     #System (0~)
@@ -119,9 +111,9 @@ class CodeType(Enum):
     EXEC_DEFINE_FUNCTION = 250
 
 class Code():
-    def __init__(self, codeType: CodeType, stateStack: StatementStack, **kw: Dict[str, Any]) -> None:
+    def __init__(self, codeType: CodeType, col: ColRange, **kw: Dict[str, Any]) -> None:
         self.codeType = codeType
-        self.stack = stateStack
+        self.col = col
         self.kw = kw
     @property
     def is_eval(self): return 200 > self.codeType.value >= 100
@@ -191,7 +183,8 @@ def create_function(name: str, parameters: Iterator[Union[str, Argument]], code:
         _run_tree(code, __locals, __file, __stack)
     return Function(name, parameters, __func)
 
-def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: FunctionType): return Function(func_name, tokens, lambda arguments, _1, _2, _3: func(**arguments))
+def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: FunctionType):
+    return Function(func_name, tokens, lambda arguments, _1, _2, _3: func(**arguments))
 
 EXPRESSION_SPACE = "[ |\t]+"
 EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
@@ -213,6 +206,14 @@ COMPILED_EXPRESSION_LOOP_CONTROL = re.compile("(break|continue)")
 
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
+
+# def __getIdent(__source: str):
+#     __whiteSpace = ""
+#     __idents = ("\t", " ")
+#     for __char in __source:
+#         if __char in __idents: __whiteSpace += __char
+#         else: break
+#     return __whiteSpace
 
 def match_parenthesis(__source: str):
     if not (__source.startswith("(") and __source.endswith(")")): return False
@@ -359,29 +360,25 @@ def checkSyntax(__source: str) -> Tuple[SyntaxResultType, Tuple[int, ...]]:
                 last_ident = looking_identify.count(first_identify)
     return (SyntaxResultType.Right, ())
 
-def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
-    if __stack == None: __stack = StatementStackSet()
-    if __stack.history == (): __stack.enter(StatementStack((0, len(expression)), 0))
+def _compile(expression: str, col: ColRange = None) -> Code:
+    if col == None: col = ColRange(0, len(expression)-1)
     try:
-        if expression == "": return Code(CodeType.EMPTY, deepcopy(__stack))
-        elif match_parenthesis(expression): s, e = __stack.last.colRange; __stack.enter(StatementStack((s+1, e-1), __stack.last.depth)); return Code(CodeType.PARENTHESIS, deepcopy(__stack), code=_compile(expression[1:-1], __stack))
-        elif COMPILED_EXPRESSION_INTEGER     .fullmatch(expression) != None: return Code(CodeType.EVAL_INTEGER , deepcopy(__stack), value=int  (expression))
-        elif COMPILED_EXPRESSION_DECIMAL     .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(__stack), value=float(expression))
-        elif COMPILED_EXPRESSION_STRING      .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(__stack), value=eval (expression))
-        elif COMPILED_EXPRESSION_BOOLEAN     .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(__stack), value=bool (expression))
-        elif COMPILED_EXPRESSION_LOOP_VALUE  .fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(__stack), index=int(expression.replace("loop-value-", "")))
-        elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(__stack))
+        if expression == "": return Code(CodeType.EMPTY, deepcopy(col))
+        elif match_parenthesis(expression): return Code(CodeType.PARENTHESIS, col, code=_compile(expression[1:-1], ColRange(col.start+1, col.end-1)))
+        elif COMPILED_EXPRESSION_INTEGER     .fullmatch(expression) != None: return Code(CodeType.EVAL_INTEGER , deepcopy(col), value=int  (expression))
+        elif COMPILED_EXPRESSION_DECIMAL     .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(col), value=float(expression))
+        elif COMPILED_EXPRESSION_STRING      .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(col), value=eval (expression))
+        elif COMPILED_EXPRESSION_BOOLEAN     .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(col), value=bool (expression))
+        elif COMPILED_EXPRESSION_LOOP_VALUE  .fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(col), index=int(expression.replace("loop-value-", "")))
+        elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(col))
         __splits = splitArguments(expression)
         if len(__splits) == 5 and __splits[1][1] == "to" and __splits[3][1] == "by":
-            s, _ = __stack.last.colRange
-            __stack.lookat((s, s+len(__splits[0][1])-1))
-            value_start = _compile(__splits[0][1], __stack)
-            __stack.lookat((s+len(__splits[0][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1))
-            value_end = _compile(__splits[2][1], __stack)
-            __stack.lookat((s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4+len(__splits[4][1])-1))
-            value_sep = _compile(__splits[4][1], __stack)
+            s = col.start
+            value_start = _compile(__splits[0][1], ColRange(s, s+len(__splits[0][1])-1))
+            value_end = _compile(__splits[2][1], ColRange(s+len(__splits[0][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1))
+            value_sep = _compile(__splits[4][1], ColRange(s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4+len(__splits[4][1])-1))
             if not CodeType.EVAL_EXECUTE in map(lambda v: v.codeType, (value_start, value_end, value_sep)):
-                return Code(CodeType.EVAL_RANGE, deepcopy(__stack), start=value_start, end=value_end, sep=value_sep)
+                return Code(CodeType.EVAL_RANGE, deepcopy(col), start=value_start, end=value_end, sep=value_sep)
 
 
         if expression.startswith("set"):
@@ -390,16 +387,13 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
 
             argName = match_define.group(1)
 
-            newRange = __stack.last.colRange
-            newRange = (newRange[0]+4+len(argName)+4, newRange[1])
-            __stack .enter(StatementStack(newRange, __stack.last.depth+1))
-            value = _compile(match_define.group(2), __stack)
+            value = _compile(match_define.group(2), ColRange(col.start+4+len(argName)+4, col.end))
             if COMPILED_EXPRESSION_VARIABLE.fullmatch(argName) == None: return SyntaxError()
             if type(value) == Void: return SyntaxError()
 
-            return Code(CodeType.EVAL_SET, deepcopy(__stack), var=argName[1:], value=value)
+            return Code(CodeType.EVAL_SET, deepcopy(col), var=argName[1:], value=value)
         elif expression.startswith("$"):
-            return Code(CodeType.EVAL_VARIABLE, deepcopy(__stack), value=expression[1:])
+            return Code(CodeType.EVAL_VARIABLE, deepcopy(col), value=expression[1:])
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
             codeTypeString = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
             codeType = {
@@ -411,17 +405,14 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
             }[codeTypeString]
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
             parse_result: List[Union[str, Code]] = []
-            __col_st, _ = __stack.last.colRange
-            __col_st += len(codeTypeString) + 1
-            __next_depth = __stack.last.depth + 1
+            __col_st = col.start + len(codeTypeString) + 1
             for sps in split_result: # split string
                 item = sps[1]
                 if sps[0] and item.startswith("(") and item.endswith(")"):
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __next_depth))
-                    parse_result.append(_compile(item[1:-1], __stack))
+                    parse_result.append(_compile(item[1:-1], ColRange(__col_st+1, __col_st+len(item)-1)))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
-            return Code(codeType, deepcopy(__stack), args=tuple(parse_result))
+            return Code(codeType, deepcopy(col), args=tuple(parse_result))
         
 
 
@@ -431,18 +422,16 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
             if match_function == None: return SyntaxError()
             split_result = splitArguments(match_function.group(2))
             parse_result: List[Union[str, Code]] = []
-            __col_st, _ = __stack.last.colRange
-            __col_st += len(match_function.group(1)) + 1
+            __col_st = col.start + len(match_function.group(1)) + 1
             for sps in split_result: # split string
                 item = sps[1]
                 if sps[0] and item.startswith("(") and item.endswith(")"):
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth))
-                    parse_result.append(_compile(item[1:-1], __stack))
+                    parse_result.append(_compile(item[1:-1], ColRange(__col_st+1, __col_st+len(item)-1)))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
-            return Code(CodeType.EVAL_EXECUTE, deepcopy(__stack), target=match_function.group(1), args=tuple(parse_result))
+            return Code(CodeType.EVAL_EXECUTE, deepcopy(col), target=match_function.group(1), args=tuple(parse_result))
         else:
-            __col_st, _ = __stack.last.colRange
+            __col_st = col.start
             i = 0
             __args = []
             __evalCode = ""
@@ -450,17 +439,15 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
                 if not __type: __evalCode += __value
                 else:
                     i += 1
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(__value)-1), __stack.last.depth+1))
-                    __args.append(_compile(__value[1:-1], __stack))
+                    __args.append(_compile(__value[1:-1], ColRange(__col_st+1, __col_st+len(__value)-1)))
                     __evalCode += "__args[" + str(i-1) + "]"
                 __col_st += len(__value) + 1
-            return Code(CodeType.EVAL_CALC, deepcopy(__stack), evalCode=__evalCode, args=tuple(__args))
+            return Code(CodeType.EVAL_CALC, deepcopy(col), evalCode=__evalCode, args=tuple(__args))
     except Exception: raise
-    finally: 
-        try: __stack.exit()
-        except: pass
+    finally: ...
 
 def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSet):
+    __stack.last.col = __code.col
     try:
         if __code.codeType == CodeType.EMPTY: return void
         if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __globals, __file, __stack)
@@ -494,7 +481,7 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
             return __sweety_sys["loop"]["values"][__code.kw["index"]]
         if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __globals, __file, __stack), _eval(__code.kw["end"], __globals, __file, __stack), _eval(__code.kw["sep"], __globals, __file, __stack))
     except __EvalException: raise
-    except Exception as e: raise __EvalException(e, __code.stack)
+    except Exception as e: raise __EvalException(e, __code.col)
 
 def _treeMap(__source: str) -> List[LineTree]:
     __source = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
@@ -529,7 +516,7 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
     if __stack == None: __stack = StackSet()
     __IGNORE_IF = False
     for tree in master:
-        __stack.enter(Stack(__file, tree.line))
+        __stack.enter(Stack(__file, tree.line, tree.code.col))
         try:
             if tree.code.is_eval:
                 match tree.code.codeType:
@@ -573,12 +560,7 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                     del __sweety_sys["loop"]["values"][__index]
                 
                 if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
-        except __EvalException as e:
-            __last_stack = __stack.last
-            __copied_stack = deepcopy(__stack)
-            __copied_stack.exit()
-            __copied_stack.enter(Stack(__last_stack.loc, __last_stack.line))
-            raise HandledException(e, __copied_stack)
+        except __EvalException as e: raise HandledException(e, deepcopy(__stack))
         __stack.exit()
     return void
 
@@ -586,21 +568,21 @@ def _remove_comment(__source: str) -> str:
     result = ""
     for l in __source.split("\n"):
         __is_str = False
+        if l == "": result += "\n"; continue
         for char in list(l):
             if char == "\"": __is_str = not __is_str
             if char == "#" and not __is_str: result += "\n"; break
             else: result += char
-        if not result.endswith("\n"): result += "\n"
+        result += "\n"
     return result
 
 def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __ignoreSyntax: bool=False):
-
     if not __ignoreSyntax and type(__source) == str:
-        __source = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
-        __syntax, __err_lines = checkSyntax(__source)
+        __Tsource = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
+        __syntax, __err_lines = checkSyntax(__Tsource)
         if __syntax != SyntaxResultType.Right:
             print("Found wrong syntax while parsing script: \""+__file+"\"")
-            for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __source.split("\n")[__err_line]))
+            for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __Tsource.split("\n")[__err_line]))
             return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
     
     try:
@@ -613,11 +595,10 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
         _run_tree(__sourceTree, __globals, __file)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
-        stack_statement = e.colStack.last
         print("Traceback:")
         for stack in e.stack.history:
             print("  "+"File \""+stack.loc+"\", line "+str(stack.line+1))
-            print("  "+"  "+__source.split("\n")[stack.line])
-            print("  "+"  "+" "*stack_statement.colRange[0] + "^"*(stack_statement.colRange[1]-stack_statement.colRange[0]))
+            print("  "+"  "+__source.split("\n")[stack.line].lstrip())
+            print("  "+"  "+" "*(stack.col.start) + "^"*(stack.col.end-stack.col.start))
         print(e.exception.__class__.__name__ +": "+ str(e.exception))
-        return ExecuteResult(ExecuteResultType.RuntimeError, e.exception, e.stack.history, stack_statement)
+        return ExecuteResult(ExecuteResultType.RuntimeError, e.exception, e.stack.history, e.col)
