@@ -116,6 +116,26 @@ class LineTree():
         self.childs.append(child)
     def __str__(self) -> str: return "["+str(self.line)+"]"+"( "+", ".join([str(l) for l in self.childs])+" )"
 
+class SyntaxResultType(Enum):
+    Right = 0
+
+    Identition = auto()
+    UnexpectedSyntax = auto()
+    MixedIdentition = auto()
+    MultiTab = auto()
+    def toException(self): ...
+
+class ExecuteResultType(Enum):
+    Success = 0
+    CompileError = 1
+    RuntimeError = 2
+
+class ExecuteResult():
+    def __init__(self, result: ExecuteResultType, *args: Tuple[Any, ...]) -> None:
+        self.result = result
+        self.args = args
+    def __str__(self) -> str: return "ExecuteResult [%s]%s" % (self.result, "".join(["\n["+str(l)+"] "+str(arg) for l, arg in enumerate(self.args)]))
+
 
 EXPRESSION_SPACE = "[ |\t]+"
 EXPRESSION_VARIABLE = "[a-z|A-Z][\w]*"
@@ -164,19 +184,19 @@ def splitArguments(__source: str) -> List[str]:
             else: split_result[-1][1] += char
     return [tuple(v) for v in split_result if v[1] != ""]
 
-def checkSyntax(__source: str) -> bool:
+def checkExpressionSyntax(__source: str) -> bool:
     __source = __source.lstrip()
     if __source == "" or COMPILED_EXPRESSION_EMPTY.fullmatch(__source) != None: return True
 
     # Eval
     elif __source.startswith("set"):
         match_define = COMPILED_EXPRESSION_SET.fullmatch(__source)
-        return match_define != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_define.group(1)) != None and checkSyntax(match_define.group(2))
+        return match_define != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_define.group(1)) != None and checkExpressionSyntax(match_define.group(2))
     elif __source.startswith("do") or __source.startswith("get"):
         match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(__source)
         return match_function != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_function.group(2)) != None \
          and not False in [(
-            checkSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
+            checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
         ) for _, token in splitArguments(match_function.group(3))]
     elif COMPILED_EXPRESSION_STRING.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_DECIMAL.fullmatch(__source) != None \
@@ -188,7 +208,7 @@ def checkSyntax(__source: str) -> bool:
         return not False in [len(splits[i][1]) >= 2 
                                 and splits[i][1][0] == "(" 
                                 and splits[i][1][-1] == ")" 
-                                and checkSyntax(splits[i][1][1:-1]) 
+                                and checkExpressionSyntax(splits[i][1][1:-1]) 
                              for i in range(len(splits)) 
                              if i % 2 == 0
                             ]
@@ -198,11 +218,45 @@ def checkSyntax(__source: str) -> bool:
         or __source.startswith("while") or __source.startswith("for")
     ):
         match_blockholder = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source)
-        if match_blockholder == None: return False
+        if match_blockholder == None: return SyntaxResultType.UnexpectedSyntax
         textgroup = match_blockholder.group(2).lstrip().rstrip()
-        return len(textgroup) == 0 or (textgroup.startswith("(") and textgroup.endswith(")") and checkSyntax(textgroup[1:-1]))
+        return len(textgroup) == 0 or (textgroup.startswith("(") and textgroup.endswith(")") and checkExpressionSyntax(textgroup[1:-1]))
 
-    return False
+    return True
+
+def checkSyntax(__source: str) -> Tuple[SyntaxResultType, Tuple[int, ...]]:
+    first_not_empty_line = [(i, line) for i, line in enumerate(__source.split("\n")) if line != "" and COMPILED_EXPRESSION_EMPTY.fullmatch(line) == None]
+    if len(first_not_empty_line) == 0: return (SyntaxResultType.Right, ())
+    if first_not_empty_line[0][1][0] in (" ", "\t"): return (SyntaxResultType.UnexpectedIndent, (0, ))
+    del first_not_empty_line
+
+    __wrong_syntax_lines: Tuple[int] = tuple([i for i, line in enumerate(__source.split("\n")) if not checkExpressionSyntax(line)])
+    if len(__wrong_syntax_lines) > 0: return (SyntaxResultType.UnexpectedSyntax, __wrong_syntax_lines)
+    
+    last_ident = 0
+    lines = __source.split("\n")
+    first_identify: Union[str, Void] = void
+    for l, line in enumerate(lines):
+        if line == "": continue
+        elif not (line[0] in (" ", "\t")):
+            first_identify = void
+            last_ident = 0
+        else:
+            looking_identify:str = ""
+            code: str = ""
+            for char in list(line):
+                if len(code) != 0: code += char
+                elif char == " " or char == "\t": looking_identify += char
+                else: code = char
+            if len(set(looking_identify)) == 2: return (SyntaxResultType.MixedIdentition, (l, ))
+            if last_ident == 0:
+                first_identify = looking_identify
+                if "\t\t" in first_identify: return (SyntaxResultType.MultiTab, (l, ))
+                last_ident = 1
+            else:
+                if set(first_identify) != set(looking_identify): return (SyntaxResultType.DifferentIdent, (l, ))
+                last_ident = looking_identify.count(first_identify)
+    return (SyntaxResultType.Right, ())
 
 def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
     if __stack == None: __stack = StatementStackSet()
@@ -299,20 +353,14 @@ def _eval(__code: Code, __globals: Dict[str, Any] = None):
     except Exception as e: raise __ExpressionException(e, __code.stack)
 
 def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<string>"):
-    first_not_empty_line = [(i, line) for i, line in enumerate(__source.split("\n")) if line != "" and COMPILED_EXPRESSION_EMPTY.fullmatch(line) == None]
-    if len(first_not_empty_line) == 0: return
-    if first_not_empty_line[0][1][0] == " " or first_not_empty_line[0][1][0] == "\t":
+
+    __syntax, __err_lines = checkSyntax(__source)
+    if __syntax != SyntaxResultType.Right:
         print("Found wrong syntax while parsing script: \""+__file+"\"")
-        print("[Syntax/Indentation] at line %d :: "%(first_not_empty_line[0][0])+first_not_empty_line[0][1])
-        return
-    del first_not_empty_line
+        for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __source.split("\n")[__err_line]))
+        return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
+    
     try:
-        __wrong_syntax_lines: Tuple[int] = tuple([i for i, line in enumerate(__source.split("\n")) if not checkSyntax(line)])
-        if len(__wrong_syntax_lines) > 0:
-            print("SyntaxError while parsing script: \""+__file+"\"")
-            line_splitted_script = __source.split("\n")
-            for line in __wrong_syntax_lines: print("[Syntax/UnkownSyntax] line %d :: "%(line+1)+line_splitted_script[line])
-            return
         
         master: List[LineTree] = []
         last_ident = 0
@@ -331,23 +379,11 @@ def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<stri
                     if len(code) != 0: code += char
                     elif char == " " or char == "\t": looking_identify += char
                     else: code = char
-                if len(set(looking_identify)) == 2:
-                    print("Found wrong syntax while parsing script: \""+__file+"\"")
-                    print("[Syntax/MixedIdent] at line "+str(i)+" :: "+line)
-                    return
                 if last_ident == 0:
                     master[-1].add_child(LineTree(i, _compile(code)))
                     first_identify = looking_identify
-                    if "\t\t" in first_identify:
-                        print("Found wrong syntax while parsing script: \""+__file+"\"")
-                        print("[Syntax/2+Tab] at line "+str(i)+" :: "+line)
-                        return
                     last_ident = 1
                 else:
-                    if set(first_identify) != set(looking_identify):
-                        print("Found wrong syntax while parsing script: \""+__file+"\"")
-                        print("[Syntax/DiffIdent] at line "+str(i)+" :: "+line)
-                        return
                     last_ident = looking_identify.count(first_identify)
                     eval("last" + ".childs[-1]" * (last_ident-1) + ".add_child(new)", {"last": master[-1], "new": LineTree(i, code)})
         del last_ident, first_identify, lines, i, line
@@ -371,11 +407,13 @@ def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<stri
                 __copied_stack.enter(Stack(__last_stack.loc, __last_stack.line))
                 raise HandledException(e, __copied_stack)
             __stack.exit()
+        return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
+        stack_statement = e.colStack.last
         print("Traceback:")
         for stack in e.stack.history:
-            stack_statement = e.colStack.last
             print("  "+"File \""+stack.loc+"\", line "+str(stack.line+1))
             print("  "+"  "+lines[stack.line])
             print("  "+"  "+" "*stack_statement.colRange[0] + "^"*(stack_statement.colRange[1]-stack_statement.colRange[0]))
         print(e.exception.__class__.__name__ +": "+ str(e.exception))
+        return ExecuteResult(ExecuteResultType.RuntimeError, e.exception, e.stack.history)
