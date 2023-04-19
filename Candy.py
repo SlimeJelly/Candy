@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from copy import copy, deepcopy
 import re
 
+__sweety_sys = {
+    "loop": {"values": {}, "next-index": 0}
+}
+
 @dataclass(frozen=True)
 class Void():
     data: str
@@ -13,6 +17,8 @@ void = Void("EMPTY")
 void_do_exp = Void("RETURN_OF_DO_EXP")
 void_set_exp = Void("RETURN_OF_SET_EXP")
 void_missing_arg = Void("MISSING_ARG")
+void_loop_break = Void("LOOP_BREAK")
+void_loop_continue = Void("LOOP_CONTINUE")
 
 @dataclass(frozen=True)
 class Argument():
@@ -98,9 +104,12 @@ class CodeType(Enum):
     EXEC_CONDITION_ELIF = 201
     EXEC_CONDITION_ELSE = 202
 
-    EXEC_LOOP_FOR = 210
-    EXEC_LOOP_WHILE = 220
-    #EXEC_LOOP_LOOP = 230
+    EXEC_LOOP_WHILE = 210
+
+    EXEC_LOOP_LOOP = 220
+    EXEC_LOOP_VALUE = 221
+    EXEC_LOOP_CONTINUE = 222
+    EXEC_LOOP_BREAK = 223
 
     #Exec - DataHolder (250~)
     EXEC_DEFINE_FUNCTION = 250
@@ -117,6 +126,8 @@ class Code():
     @property
     def is_dataholder(self): return 300 > self.codeType.value >= 250
     def __str__(self) -> str: return f"Code::{self.codeType} (at {self.stack}) [{self.kw}]"
+    def asCData(self, ):
+        return 
 
 class LineTree():
     def __init__(self, line: int, code: Code, master: Union[Void, "LineTree"] = void):
@@ -165,6 +176,10 @@ class Infinity():
     def __gt__(self, __value: object) -> bool: return False if type(__value) != Infinity else (False if (not self.sign) and __value.sign else True)
     def __ge__(self, __value: object) -> bool: return False if type(__value) != Infinity else (self > __value or self == __value)
 
+class Forever(Iterator):
+    def __init__(self) -> None: self.index = 0
+    def __next__(self) -> int: self.index += 1; return self.index
+
 def create_function(name: str, parameters: Iterator[Union[str, Argument]], code: Iterator[LineTree]) -> Function:
     def __func(arguments: Dict[str, Any], __globals: Dict[str, Any], __file: str, __stack: StackSet) -> NoReturn:
         __locals = copy(__globals)
@@ -184,9 +199,11 @@ COMPILED_EXPRESSION_INTEGER = re.compile("[0-9]+")
 COMPILED_EXPRESSION_DECIMAL = re.compile("[0-9]*.[0-9]+")
 COMPILED_EXPRESSION_BOOLEAN = re.compile("(true|false)")
 COMPILED_EXPRESSION_SET = re.compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_FUNCTION = re.compile("("+EXPRESSION_NAME+")"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_FUNCTION = re.compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
 COMPILED_EXPRESSION_WORD = re.compile("\\w+")
-COMPILED_EXPRESSION_BLOCKHOLDER = re.compile("(if|elif|else|for|while)"+"([^\n]*):")
+COMPILED_EXPRESSION_BLOCKHOLDER = re.compile("(if|elif|else|for|while|loop)"+"([^\n]*):")
+COMPILED_EXPRESSION_LOOP_VALUE = re.compile("loop-value-\\d+")
+COMPILED_EXPRESSION_LOOP_CONTROL = re.compile("(break|continue)")
 
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
@@ -209,6 +226,7 @@ def putDefault(__dict: Dict[str, Any] = None):
     if not "asBool"   in defaultKeys: __dict["asBool"]   = create_py_function("asBool",   ["of", Argument("text")], lambda text: bool(text))
     if not "asList"   in defaultKeys: __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
     if not "length"   in defaultKeys: __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
+    if not "forever"  in defaultKeys: __dict["forever"]  = create_py_function("forever",  [], Forever)
     if not "infinity" in defaultKeys: __dict["infinity"] = Infinity()
 
 def splitArguments(__source: str) -> List[str]:
@@ -245,30 +263,27 @@ def checkExpressionSyntax(__source: str) -> bool:
     elif COMPILED_EXPRESSION_STRING.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_DECIMAL.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_INTEGER.fullmatch(__source) != None \
-        or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None: return True
+        or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None : return True
 
     # Exec
-    if (__source.startswith("if") or __source.startswith("elif") or __source.startswith("else")
-        or __source.startswith("while") or __source.startswith("for")
-    ):
+    if (COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source) != None):
         match_blockholder = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source)
-        if match_blockholder == None: return False
-        textgroup = match_blockholder.group(2).lstrip().rstrip()
         codeTypeString = match_blockholder.group(1)
+        textgroup = match_blockholder.group(2).lstrip().rstrip()
         if codeTypeString in ("else"): 
             return len(textgroup) == 0
         elif codeTypeString in ("if", "elif", "while"):
             sa = splitArguments(textgroup)
             return len(sa) == 1 and sa[0][0] and checkExpressionSyntax(sa[0][1][1:-1])
-        elif codeTypeString in ("for"):
+        elif codeTypeString in ("loop"):
             sa = splitArguments(textgroup)
-            return len(sa) == 3 and (not sa[0][0]) and (not sa[1][0]) and sa[2][0] and \
-                COMPILED_EXPRESSION_VARIABLE.fullmatch(sa[0][1]) \
-                and sa[1][1] == "in" and checkExpressionSyntax(sa[2][1][1:-1])
+            return len(sa) == 1 and sa[0][0] and sa[0][1].startswith("(") and sa[0][1].endswith(")") and checkExpressionSyntax(sa[0][1][1:-1])
+    if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
+        or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
         
     if COMPILED_EXPRESSION_FUNCTION.fullmatch(__source) != None:
         match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(__source)
-        return match_function != None and COMPILED_EXPRESSION_WORD.fullmatch(match_function.group(1)) != None \
+        return COMPILED_EXPRESSION_WORD.fullmatch(match_function.group(1)) != None \
          and not (False in [(
             checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
         ) for _, token in splitArguments(match_function.group(2))])
@@ -326,6 +341,8 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
         elif COMPILED_EXPRESSION_DECIMAL .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(__stack), value=float(expression))
         elif COMPILED_EXPRESSION_STRING  .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(__stack), value=eval (expression))
         elif COMPILED_EXPRESSION_BOOLEAN .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(__stack), value=bool (expression))
+        elif COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(__stack), index=int(expression.replace("loop-value-", "")))
+        elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(__stack))
         elif expression.startswith("set"):
             match_define = COMPILED_EXPRESSION_SET.fullmatch(expression)
             if match_define == None: return SyntaxError()
@@ -348,8 +365,8 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
                 "if"   : CodeType.EXEC_CONDITION_IF,
                 "elif" : CodeType.EXEC_CONDITION_ELIF,
                 "else" : CodeType.EXEC_CONDITION_ELSE,
-                "for"  : CodeType.EXEC_LOOP_FOR,
-                "while": CodeType.EXEC_LOOP_WHILE
+                "while": CodeType.EXEC_LOOP_WHILE,
+                "loop" : CodeType.EXEC_LOOP_LOOP
             }[codeTypeString]
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
             parse_result: List[Union[str, Code]] = []
@@ -428,6 +445,7 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
             __globals[__code.kw["var"]] = value
             return void_set_exp
         if __code.codeType == CodeType.EVAL_CALC: return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __globals, __file, __stack) for arg in __code.kw["args"]]})
+        if __code.codeType == CodeType.EXEC_LOOP_VALUE: return __sweety_sys["loop"]["values"][__code.kw["index"]]
     except __ExpressionException: raise
     except Exception as e: raise __ExpressionException(e, __code.stack)
 
@@ -464,7 +482,11 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
     for tree in master:
         __stack.enter(Stack(__file, tree.line))
         try:
-            if tree.code.is_eval: _eval(tree.code, __globals, __file, __stack)
+            if tree.code.is_eval:
+                match tree.code.codeType:
+                    case CodeType.EXEC_LOOP_CONTINUE: return void_loop_continue
+                    case CodeType.EXEC_LOOP_BREAK: return void_loop_break
+                _eval(tree.code, __globals, __file, __stack)
             elif tree.code.is_exec:
                 if tree.code.is_dataholder: original_keys = __globals.keys()
 
@@ -488,12 +510,18 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                 if tree.code.codeType == CodeType.EXEC_LOOP_WHILE:
                     while _eval(tree.code.kw["args"][0], __globals, __file, __stack):
                         _run_tree(tree.childs, __globals, __file, __stack)
-                elif tree.code.codeType == CodeType.EXEC_LOOP_FOR:
-                    __iter = _eval(tree.code.kw["args"][2], __globals, __file, __stack)
-                    __var = tree.code.kw["args"][0][1:]
+                elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
+                    __iter = _eval(tree.code.kw["args"][0], __globals, __file, __stack)
+                    if type(__iter) == int: __iter = range(__iter)
+                    __index: int = __sweety_sys["loop"]["next-index"]
+                    __sweety_sys["loop"]["next-index"] += 1
                     for __item in __iter:
-                        __globals[__var] = __item
-                        _run_tree(tree.childs, __globals, __file, __stack)
+                        __sweety_sys["loop"]["values"][__index] = __item
+                        loop_control:Void = _run_tree(tree.childs, __globals, __file, __stack)
+                        if loop_control == void_loop_continue: continue
+                        elif loop_control == void_loop_break: break
+                    __sweety_sys["loop"]["next-index"] -= 1
+                    del __sweety_sys["loop"]["values"][__index]
                 
                 if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
         except __ExpressionException as e:
@@ -503,6 +531,7 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
             __copied_stack.enter(Stack(__last_stack.loc, __last_stack.line))
             raise HandledException(e, __copied_stack)
         __stack.exit()
+    return void
     
 def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __ignoreSyntax: bool=False):
     if not __ignoreSyntax and type(__source) == str:
@@ -513,12 +542,13 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
             return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
     
     try:
-        if type(__source) == str: __source = _treeMap(__source)
+        if type(__source) == str: __sourceTree = _treeMap(__source)
+        else: __sourceTree = __source
 
         if __globals == None: __globals = {}
         putDefault(__globals)
 
-        _run_tree(__source, __globals, __file)
+        _run_tree(__sourceTree, __globals, __file)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
         stack_statement = e.colStack.last
