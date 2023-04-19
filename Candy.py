@@ -49,7 +49,7 @@ class StatementStack():
 
 class StatementStackSet():
     def __init__(self) -> None: self.stacks: List[StatementStack] = []
-    def lookat(self, colRange: Tuple[int, int]) -> None: self.stacks[-1].colRange = colRange
+    def lookat(self, colRange: Tuple[int, int]) -> None: depth = self.last.depth; self.enter(StatementStack(colRange, depth))
     def enter(self, newStack: StatementStack) -> None: self.stacks.append(newStack)
     def exit(self) -> None: self.stacks.pop()
     @property
@@ -72,13 +72,13 @@ class StackSet():
     def history(self) -> Tuple[Stack]: return tuple(self.stacks)
 
 
-class __ExpressionException(Exception):
+class __EvalException(Exception):
     def __init__(self, exception: Exception, stack: StatementStackSet) -> None:
         self.exception = exception
         self.curStack = stack
 
 class HandledException(Exception):
-    def __init__(self, exception: "__ExpressionException", stack: StackSet) -> None:
+    def __init__(self, exception: "__EvalException", stack: StackSet) -> None:
         self.exception = exception.exception
         self.stack = stack
         self.colStack = exception.curStack
@@ -86,6 +86,8 @@ class HandledException(Exception):
 class CodeType(Enum):
     #System (0~)
     EMPTY = 0
+    COMMENT = 10
+    PARENTHESIS = 20
 
     #Eval (100~)
     EVAL_INTEGER = 100
@@ -94,9 +96,11 @@ class CodeType(Enum):
     EVAL_BOOLEAN = 103
     EVAL_VARIABLE = 104
 
-    EVAL_EXECUTE = 110
-    EVAL_SET = 111
-    EVAL_CALC = 112
+    EVAL_RANGE = 110
+
+    EVAL_EXECUTE = 150
+    EVAL_SET = 151
+    EVAL_CALC = 152
 
     #Exec (200~)
     #Exec - Block (200~)
@@ -192,11 +196,13 @@ def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: 
 EXPRESSION_SPACE = "[ |\t]+"
 EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
 EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
+EXPRESSION_INTEGER = "[1-9][0-9]*|0"
+EXPRESSION_DECIMAL = "[0-9]*.[0-9]+"
 COMPILED_EXPRESSION_EMPTY = re.compile("[ |\t]+")
 COMPILED_EXPRESSION_VARIABLE = re.compile(EXPRESSION_VARIABLE)
 COMPILED_EXPRESSION_STRING = re.compile("\"[^\"\n]*\"")
-COMPILED_EXPRESSION_INTEGER = re.compile("[0-9]+")
-COMPILED_EXPRESSION_DECIMAL = re.compile("[0-9]*.[0-9]+")
+COMPILED_EXPRESSION_INTEGER = re.compile(EXPRESSION_INTEGER)
+COMPILED_EXPRESSION_DECIMAL = re.compile(EXPRESSION_DECIMAL)
 COMPILED_EXPRESSION_BOOLEAN = re.compile("(true|false)")
 COMPILED_EXPRESSION_SET = re.compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
 COMPILED_EXPRESSION_FUNCTION = re.compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
@@ -207,6 +213,20 @@ COMPILED_EXPRESSION_LOOP_CONTROL = re.compile("(break|continue)")
 
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
+
+def match_parenthesis(__source: str):
+    if not (__source.startswith("(") and __source.endswith(")")): return False
+    __stack = 0
+    is_in_string = False
+    for __index, __char in enumerate(__source):
+        if __char == '"': is_in_string = not is_in_string
+        if is_in_string: continue
+        if __char == "(": __stack += 1
+        if __char == ")": __stack -= 1
+        if __stack == 0 and __index != len(__source)-1: return False
+    return __stack == 0
+    
+
 
 def putDefault(__dict: Dict[str, Any] = None):
     if __dict == None: __dict = {}
@@ -227,6 +247,7 @@ def putDefault(__dict: Dict[str, Any] = None):
     if not "asList"   in defaultKeys: __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
     if not "length"   in defaultKeys: __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
     if not "forever"  in defaultKeys: __dict["forever"]  = create_py_function("forever",  [], Forever)
+    if not "test"  in defaultKeys: __dict["test"]  = create_py_function("test",  ["to", Argument("ab"), "by", Argument("bc")], lambda ab, bc: __combine(ab, bc))
     if not "infinity" in defaultKeys: __dict["infinity"] = Infinity()
 
 def splitArguments(__source: str) -> List[str]:
@@ -255,6 +276,10 @@ def checkExpressionSyntax(__source: str) -> bool:
 
     __source = __source.lstrip()
     if __source == "" or COMPILED_EXPRESSION_EMPTY.fullmatch(__source) != None: return True
+    if (match_parenthesis(__source)): 
+        return checkExpressionSyntax(__source[1:-1])
+    
+    
 
     # Eval
     elif __source.startswith("set"):
@@ -263,7 +288,10 @@ def checkExpressionSyntax(__source: str) -> bool:
     elif COMPILED_EXPRESSION_STRING.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_DECIMAL.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_INTEGER.fullmatch(__source) != None \
-        or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None : return True
+        or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None: return True
+    
+    splits = splitArguments(__source)
+    if len(splits) == 5 and splits[1][1] == "to" and splits[3][1] == "by" and checkExpressionSyntax(splits[0][1]) and checkExpressionSyntax(splits[2][1]) and checkExpressionSyntax(splits[4][1]): return True
 
     # Exec
     if (COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source) != None):
@@ -288,7 +316,6 @@ def checkExpressionSyntax(__source: str) -> bool:
             checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
         ) for _, token in splitArguments(match_function.group(2))])
     
-    splits = splitArguments(__source)
     __IsValueList = [_type for _type, _ in splits]
     if (len(splits) >=3 and __IsValueList[:-1] and (not False in [__IsValueList[i] == (i % 2 == 0) for i in range(len(__IsValueList))])):
         return not False in [len(splits[i][1]) >= 2 
@@ -337,13 +364,27 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
     if __stack.history == (): __stack.enter(StatementStack((0, len(expression)), 0))
     try:
         if expression == "": return Code(CodeType.EMPTY, deepcopy(__stack))
-        elif COMPILED_EXPRESSION_INTEGER .fullmatch(expression) != None: return Code(CodeType.EVAL_INTEGER , deepcopy(__stack), value=int  (expression))
-        elif COMPILED_EXPRESSION_DECIMAL .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(__stack), value=float(expression))
-        elif COMPILED_EXPRESSION_STRING  .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(__stack), value=eval (expression))
-        elif COMPILED_EXPRESSION_BOOLEAN .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(__stack), value=bool (expression))
-        elif COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(__stack), index=int(expression.replace("loop-value-", "")))
+        elif match_parenthesis(expression): s, e = __stack.last.colRange; __stack.enter(StatementStack((s+1, e-1), __stack.last.depth)); return Code(CodeType.PARENTHESIS, deepcopy(__stack), code=_compile(expression[1:-1], __stack))
+        elif COMPILED_EXPRESSION_INTEGER     .fullmatch(expression) != None: return Code(CodeType.EVAL_INTEGER , deepcopy(__stack), value=int  (expression))
+        elif COMPILED_EXPRESSION_DECIMAL     .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(__stack), value=float(expression))
+        elif COMPILED_EXPRESSION_STRING      .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(__stack), value=eval (expression))
+        elif COMPILED_EXPRESSION_BOOLEAN     .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(__stack), value=bool (expression))
+        elif COMPILED_EXPRESSION_LOOP_VALUE  .fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(__stack), index=int(expression.replace("loop-value-", "")))
         elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(__stack))
-        elif expression.startswith("set"):
+        __splits = splitArguments(expression)
+        if len(__splits) == 5 and __splits[1][1] == "to" and __splits[3][1] == "by":
+            s, _ = __stack.last.colRange
+            __stack.lookat((s, s+len(__splits[0][1])-1))
+            value_start = _compile(__splits[0][1], __stack)
+            __stack.lookat((s+len(__splits[0][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1))
+            value_end = _compile(__splits[2][1], __stack)
+            __stack.lookat((s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4+len(__splits[4][1])-1))
+            value_sep = _compile(__splits[4][1], __stack)
+            if not CodeType.EVAL_EXECUTE in map(lambda v: v.codeType, (value_start, value_end, value_sep)):
+                return Code(CodeType.EVAL_RANGE, deepcopy(__stack), start=value_start, end=value_end, sep=value_sep)
+
+
+        if expression.startswith("set"):
             match_define = COMPILED_EXPRESSION_SET.fullmatch(expression)
             if match_define == None: return SyntaxError()
 
@@ -372,16 +413,16 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
             parse_result: List[Union[str, Code]] = []
             __col_st, _ = __stack.last.colRange
             __col_st += len(codeTypeString) + 1
+            __next_depth = __stack.last.depth + 1
             for sps in split_result: # split string
                 item = sps[1]
                 if sps[0] and item.startswith("(") and item.endswith(")"):
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth+1))
+                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __next_depth))
                     parse_result.append(_compile(item[1:-1], __stack))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
             return Code(codeType, deepcopy(__stack), args=tuple(parse_result))
         
-
 
 
         # 
@@ -395,13 +436,12 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
             for sps in split_result: # split string
                 item = sps[1]
                 if sps[0] and item.startswith("(") and item.endswith(")"):
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth+1))
+                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth))
                     parse_result.append(_compile(item[1:-1], __stack))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
             return Code(CodeType.EVAL_EXECUTE, deepcopy(__stack), target=match_function.group(1), args=tuple(parse_result))
         else:
-            __splits = splitArguments(expression)
             __col_st, _ = __stack.last.colRange
             i = 0
             __args = []
@@ -416,11 +456,14 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
                 __col_st += len(__value) + 1
             return Code(CodeType.EVAL_CALC, deepcopy(__stack), evalCode=__evalCode, args=tuple(__args))
     except Exception: raise
-    finally: __stack.exit()
+    finally: 
+        try: __stack.exit()
+        except: pass
 
 def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSet):
     try:
         if __code.codeType == CodeType.EMPTY: return void
+        if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __globals, __file, __stack)
         if __code.codeType == CodeType.EVAL_INTEGER: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_DECIMAL: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_STRING:  return __code.kw["value"]
@@ -445,9 +488,13 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
             __globals[__code.kw["var"]] = value
             return void_set_exp
         if __code.codeType == CodeType.EVAL_CALC: return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __globals, __file, __stack) for arg in __code.kw["args"]]})
-        if __code.codeType == CodeType.EXEC_LOOP_VALUE: return __sweety_sys["loop"]["values"][__code.kw["index"]]
-    except __ExpressionException: raise
-    except Exception as e: raise __ExpressionException(e, __code.stack)
+        if __code.codeType == CodeType.EXEC_LOOP_VALUE:
+            if not __code.kw["index"] in __sweety_sys["loop"]["values"]:
+                raise SyntaxError("Loop value of index '"+str(__code.kw["index"])+"' is overloading. (" + ("no loop detected" if __sweety_sys["loop"]["values"] == {} else "max loop index: "+str(max(__sweety_sys["loop"]["values"].keys()))) + ")")
+            return __sweety_sys["loop"]["values"][__code.kw["index"]]
+        if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __globals, __file, __stack), _eval(__code.kw["end"], __globals, __file, __stack), _eval(__code.kw["sep"], __globals, __file, __stack))
+    except __EvalException: raise
+    except Exception as e: raise __EvalException(e, __code.stack)
 
 def _treeMap(__source: str) -> List[LineTree]:
     master: List[LineTree] = []
@@ -524,7 +571,7 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                     del __sweety_sys["loop"]["values"][__index]
                 
                 if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
-        except __ExpressionException as e:
+        except __EvalException as e:
             __last_stack = __stack.last
             __copied_stack = deepcopy(__stack)
             __copied_stack.exit()
