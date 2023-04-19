@@ -8,6 +8,7 @@ import re
 @dataclass(frozen=True)
 class Void():
     data: str
+
 void = Void("EMPTY")
 void_do_exp = Void("RETURN_OF_DO_EXP")
 void_set_exp = Void("RETURN_OF_SET_EXP")
@@ -99,6 +100,7 @@ class CodeType(Enum):
 
     EXEC_LOOP_FOR = 210
     EXEC_LOOP_WHILE = 220
+    #EXEC_LOOP_LOOP = 230
 
     #Exec - DataHolder (250~)
     EXEC_DEFINE_FUNCTION = 250
@@ -173,7 +175,8 @@ def create_function(name: str, parameters: Iterator[Union[str, Argument]], code:
 def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: FunctionType): return Function(func_name, tokens, lambda arguments, _1, _2, _3: func(**arguments))
 
 EXPRESSION_SPACE = "[ |\t]+"
-EXPRESSION_VARIABLE = "[a-z|A-Z][\w|\d|_]*"
+EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
+EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
 COMPILED_EXPRESSION_EMPTY = re.compile("[ |\t]+")
 COMPILED_EXPRESSION_VARIABLE = re.compile(EXPRESSION_VARIABLE)
 COMPILED_EXPRESSION_STRING = re.compile("\"[^\"\n]*\"")
@@ -181,7 +184,7 @@ COMPILED_EXPRESSION_INTEGER = re.compile("[0-9]+")
 COMPILED_EXPRESSION_DECIMAL = re.compile("[0-9]*.[0-9]+")
 COMPILED_EXPRESSION_BOOLEAN = re.compile("(true|false)")
 COMPILED_EXPRESSION_SET = re.compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_FUNCTION = re.compile("(do|get)"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_FUNCTION = re.compile("("+EXPRESSION_NAME+")"+EXPRESSION_SPACE+"([^\n]+)")
 COMPILED_EXPRESSION_WORD = re.compile("\\w+")
 COMPILED_EXPRESSION_BLOCKHOLDER = re.compile("(if|elif|else|for|while)"+"([^\n]*):")
 
@@ -191,10 +194,12 @@ OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**",
 def putDefault(__dict: Dict[str, Any] = None):
     if __dict == None: __dict = {}
     defaultKeys = list(__dict.keys())
-    def __print(text): print(text)
+    def __print(text): print(text, end="")
+    def __println(text): print(text)
     def __combine(t1, t2): return str(t1)+str(t2)
     def __repeat(text, count): return str(text)*count
     if not "print"    in defaultKeys: __dict["print"]    = create_py_function("print",    ["of", Argument("text")], __print)
+    if not "println"  in defaultKeys: __dict["println"]  = create_py_function("println",  ["of", Argument("text")], __println)
     if not "combine"  in defaultKeys: __dict["combine"]  = create_py_function("combine",  ["of", Argument("t1"), "and", Argument("t2")], __combine)
     if not "repeat"   in defaultKeys: __dict["repeat"]   = create_py_function("repeat",   ["of", Argument("text"), "for", Argument("count"), "times"], __repeat)
     if not "range"    in defaultKeys: __dict["range"]    = create_py_function("range",    ["of", Argument("start"), "to", Argument("end"), "by", Argument("sep", auto=1)], lambda start, end, sep: range(start, end, sep))
@@ -203,6 +208,7 @@ def putDefault(__dict: Dict[str, Any] = None):
     if not "asFloat"  in defaultKeys: __dict["asFloat"]  = create_py_function("asFloat",  ["of", Argument("text")], lambda text: float(text))
     if not "asBool"   in defaultKeys: __dict["asBool"]   = create_py_function("asBool",   ["of", Argument("text")], lambda text: bool(text))
     if not "asList"   in defaultKeys: __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
+    if not "length"   in defaultKeys: __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
     if not "infinity" in defaultKeys: __dict["infinity"] = Infinity()
 
 def splitArguments(__source: str) -> List[str]:
@@ -225,9 +231,10 @@ def splitArguments(__source: str) -> List[str]:
         else:
             if char == " ": split_result.append([True, ""])
             else: split_result[-1][1] += char
-    return [tuple(v) for v in split_result if v[1] != ""]
+    return list(map(tuple, filter(lambda v: v[1] != "", split_result)))
 
 def checkExpressionSyntax(__source: str) -> bool:
+
     __source = __source.lstrip()
     if __source == "" or COMPILED_EXPRESSION_EMPTY.fullmatch(__source) != None: return True
 
@@ -235,26 +242,10 @@ def checkExpressionSyntax(__source: str) -> bool:
     elif __source.startswith("set"):
         match_define = COMPILED_EXPRESSION_SET.fullmatch(__source)
         return match_define != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_define.group(1)) != None and checkExpressionSyntax(match_define.group(2))
-    elif __source.startswith("do") or __source.startswith("get"):
-        match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(__source)
-        return match_function != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_function.group(2)) != None \
-         and not False in [(
-            checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
-        ) for _, token in splitArguments(match_function.group(3))]
     elif COMPILED_EXPRESSION_STRING.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_DECIMAL.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_INTEGER.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None: return True
-    splits = splitArguments(__source)
-    __IsValueList = [_type for _type, _ in splits]
-    if (len(splits) >=3 and __IsValueList[:-1] and (not False in [__IsValueList[i] == (i % 2 == 0) for i in range(len(__IsValueList))])):
-        return not False in [len(splits[i][1]) >= 2 
-                                and splits[i][1][0] == "(" 
-                                and splits[i][1][-1] == ")" 
-                                and checkExpressionSyntax(splits[i][1][1:-1]) 
-                             for i in range(len(splits)) 
-                             if i % 2 == 0
-                            ]
 
     # Exec
     if (__source.startswith("if") or __source.startswith("elif") or __source.startswith("else")
@@ -274,9 +265,25 @@ def checkExpressionSyntax(__source: str) -> bool:
             return len(sa) == 3 and (not sa[0][0]) and (not sa[1][0]) and sa[2][0] and \
                 COMPILED_EXPRESSION_VARIABLE.fullmatch(sa[0][1]) \
                 and sa[1][1] == "in" and checkExpressionSyntax(sa[2][1][1:-1])
-        #return len(textgroup) == 0 or (textgroup.startswith("(") and textgroup.endswith(")") and checkExpressionSyntax(textgroup))
-
-    return COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None
+        
+    if COMPILED_EXPRESSION_FUNCTION.fullmatch(__source) != None:
+        match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(__source)
+        return match_function != None and COMPILED_EXPRESSION_WORD.fullmatch(match_function.group(1)) != None \
+         and not (False in [(
+            checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
+        ) for _, token in splitArguments(match_function.group(2))])
+    
+    splits = splitArguments(__source)
+    __IsValueList = [_type for _type, _ in splits]
+    if (len(splits) >=3 and __IsValueList[:-1] and (not False in [__IsValueList[i] == (i % 2 == 0) for i in range(len(__IsValueList))])):
+        return not False in [len(splits[i][1]) >= 2 
+                                and splits[i][1][0] == "(" 
+                                and splits[i][1][-1] == ")" 
+                                and checkExpressionSyntax(splits[i][1][1:-1]) 
+                             for i in range(len(splits)) 
+                             if i % 2 == 0
+                            ]
+    return False
 
 def checkSyntax(__source: str) -> Tuple[SyntaxResultType, Tuple[int, ...]]:
     first_not_empty_line = [(i, line) for i, line in enumerate(__source.split("\n")) if line != "" and COMPILED_EXPRESSION_EMPTY.fullmatch(line) == None]
@@ -331,24 +338,10 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
             value = _compile(match_define.group(2), __stack)
             if COMPILED_EXPRESSION_VARIABLE.fullmatch(argName) == None: return SyntaxError()
             if type(value) == Void: return SyntaxError()
-            
-            return Code(CodeType.EVAL_SET, deepcopy(__stack), var=argName, value=value)
-        elif expression.startswith("do") or expression.startswith("get"):
-            match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(expression)
-            if match_function == None: return SyntaxError()
-            split_result = splitArguments(match_function.group(3))
-            parse_result: List[Union[str, Code]] = []
-            __col_st, _ = __stack.last.colRange
-            __col_st += (3 if expression.startswith("do") else 4) + len(match_function.group(2)) + 1
-            for sps in split_result: # split string
-                item = sps[1]
-                if sps[0] and item.startswith("(") and item.endswith(")"):
-                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth+1))
-                    parse_result.append(_compile(item[1:-1], __stack))
-                else: parse_result.append(item)
-                __col_st += len(item) + 1
-            return Code(CodeType.EVAL_EXECUTE, deepcopy(__stack), target=match_function.group(2), args=tuple(parse_result), return_result=match_function.group(1) == "get")
-        elif COMPILED_EXPRESSION_VARIABLE.fullmatch(expression) != None: return Code(CodeType.EVAL_VARIABLE, deepcopy(__stack), value=expression)
+
+            return Code(CodeType.EVAL_SET, deepcopy(__stack), var=argName[1:], value=value)
+        elif expression.startswith("$"):
+            return Code(CodeType.EVAL_VARIABLE, deepcopy(__stack), value=expression[1:])
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
             codeTypeString = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
             codeType = {
@@ -370,6 +363,26 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
             return Code(codeType, deepcopy(__stack), args=tuple(parse_result))
+        
+
+
+
+        # 
+        elif COMPILED_EXPRESSION_FUNCTION.fullmatch(expression) != None:
+            match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(expression)
+            if match_function == None: return SyntaxError()
+            split_result = splitArguments(match_function.group(2))
+            parse_result: List[Union[str, Code]] = []
+            __col_st, _ = __stack.last.colRange
+            __col_st += len(match_function.group(1)) + 1
+            for sps in split_result: # split string
+                item = sps[1]
+                if sps[0] and item.startswith("(") and item.endswith(")"):
+                    __stack.enter(StatementStack((__col_st+1, __col_st+len(item)-1), __stack.last.depth+1))
+                    parse_result.append(_compile(item[1:-1], __stack))
+                else: parse_result.append(item)
+                __col_st += len(item) + 1
+            return Code(CodeType.EVAL_EXECUTE, deepcopy(__stack), target=match_function.group(1), args=tuple(parse_result))
         else:
             __splits = splitArguments(expression)
             __col_st, _ = __stack.last.colRange
@@ -407,7 +420,7 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
                 if value is void_do_exp: raise SyntaxError("Function arguments must not be DO expression")
                 if value is void_set_exp: raise SyntaxError("Function arguments must not be SET expression")
             result = target(arguments, __globals, __file, __stack)
-            return result if __code.kw["return_result"] else void_do_exp
+            return result
         if __code.codeType == CodeType.EVAL_SET:
             value = _eval(__code.kw["value"], __globals, __file, __stack)
             if value is void_do_exp: raise SyntaxError("SET expression must not be DO expression")
@@ -477,7 +490,7 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                         _run_tree(tree.childs, __globals, __file, __stack)
                 elif tree.code.codeType == CodeType.EXEC_LOOP_FOR:
                     __iter = _eval(tree.code.kw["args"][2], __globals, __file, __stack)
-                    __var = tree.code.kw["args"][0]
+                    __var = tree.code.kw["args"][0][1:]
                     for __item in __iter:
                         __globals[__var] = __item
                         _run_tree(tree.childs, __globals, __file, __stack)
@@ -491,21 +504,21 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
             raise HandledException(e, __copied_stack)
         __stack.exit()
     
-def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<string>"):
-    __syntax, __err_lines = checkSyntax(__source)
-    if __syntax != SyntaxResultType.Right:
-        print("Found wrong syntax while parsing script: \""+__file+"\"")
-        for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __source.split("\n")[__err_line]))
-        return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
+def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __ignoreSyntax: bool=False):
+    if not __ignoreSyntax and type(__source) == str:
+        __syntax, __err_lines = checkSyntax(__source)
+        if __syntax != SyntaxResultType.Right:
+            print("Found wrong syntax while parsing script: \""+__file+"\"")
+            for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __source.split("\n")[__err_line]))
+            return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
     
     try:
-        
-        master = _treeMap(__source)
+        if type(__source) == str: __source = _treeMap(__source)
 
         if __globals == None: __globals = {}
         putDefault(__globals)
 
-        _run_tree(master, __globals, __file)
+        _run_tree(__source, __globals, __file)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
         stack_statement = e.colStack.last
