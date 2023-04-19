@@ -497,6 +497,8 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
     except Exception as e: raise __EvalException(e, __code.stack)
 
 def _treeMap(__source: str) -> List[LineTree]:
+    __source = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
+
     master: List[LineTree] = []
     last_ident = 0
     lines = __source.split("\n")
@@ -579,9 +581,22 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
             raise HandledException(e, __copied_stack)
         __stack.exit()
     return void
-    
+
+def _remove_comment(__source: str) -> str:
+    result = ""
+    for l in __source.split("\n"):
+        __is_str = False
+        for char in list(l):
+            if char == "\"": __is_str = not __is_str
+            if char == "#" and not __is_str: result += "\n"; break
+            else: result += char
+        if not result.endswith("\n"): result += "\n"
+    return result
+
 def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __ignoreSyntax: bool=False):
+
     if not __ignoreSyntax and type(__source) == str:
+        __source = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
         __syntax, __err_lines = checkSyntax(__source)
         if __syntax != SyntaxResultType.Right:
             print("Found wrong syntax while parsing script: \""+__file+"\"")
