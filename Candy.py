@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from types import FunctionType
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union, overload
 from dataclasses import dataclass
 from copy import deepcopy
 import re
@@ -150,7 +150,8 @@ COMPILED_EXPRESSION_FUNCTION = re.compile("(do|get)"+EXPRESSION_SPACE+"("+EXPRES
 COMPILED_EXPRESSION_WORD = re.compile("\\w+")
 COMPILED_EXPRESSION_BLOCKHOLDER = re.compile("(if|elif|else|for|while)"+"([^\n]*):")
 
-OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**")
+OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
+                   "==", "!=", "<", ">", "<=", ">=",)
 
 def putDefault(__dict: Dict[str, Any] = None):
     if __dict == None: __dict = {}
@@ -218,7 +219,7 @@ def checkExpressionSyntax(__source: str) -> bool:
         or __source.startswith("while") or __source.startswith("for")
     ):
         match_blockholder = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source)
-        if match_blockholder == None: return SyntaxResultType.UnexpectedSyntax
+        if match_blockholder == None: return False
         textgroup = match_blockholder.group(2).lstrip().rstrip()
         return len(textgroup) == 0 or (textgroup.startswith("(") and textgroup.endswith(")") and checkExpressionSyntax(textgroup[1:-1]))
 
@@ -305,7 +306,15 @@ def _compile(expression: str, __stack: StatementStackSet = None) -> Code:
                 "while": CodeType.EXEC_LOOP_WHILE,
                 "for"  : CodeType.EXEC_LOOP_FOR
             }[COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)]
-            return Code(codeType, deepcopy(__stack), args=COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
+            return Code(codeType, deepcopy(__stack), args=tuple(
+                map(
+                    lambda t: _compile(t[1]),
+                    filter(
+                        lambda t: t[0],
+                        splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
+                    )
+                )
+            ))
         else:
             __splits = splitArguments(expression)
             __col_st, _ = __stack.last.colRange
@@ -352,6 +361,64 @@ def _eval(__code: Code, __globals: Dict[str, Any] = None):
     except __ExpressionException: raise
     except Exception as e: raise __ExpressionException(e, __code.stack)
 
+def _treeMap(__source: str) -> List[LineTree]:
+    master: List[LineTree] = []
+    last_ident = 0
+    lines = __source.split("\n")
+    first_identify: Union[str, Void] = void
+    for i, line in enumerate(lines):
+        if line == "": continue
+        elif not (line[0] in (" ", "\t")):
+            master.append(LineTree(i, _compile(line)))
+            first_identify = void
+            last_ident = 0
+        else:
+            looking_identify:str = ""
+            code: str = ""
+            for char in list(line):
+                if len(code) != 0: code += char
+                elif char == " " or char == "\t": looking_identify += char
+                else: code = char
+            if last_ident == 0:
+                master[-1].add_child(LineTree(i, _compile(code)))
+                first_identify = looking_identify
+                last_ident = 1
+            else:
+                last_ident = looking_identify.count(first_identify)
+                eval("last" + ".childs[-1]" * (last_ident-1) + ".add_child(new)", {"last": master[-1], "new": LineTree(i, _compile(code))})
+    return master
+
+def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __stack: StackSet = None):
+    if __stack == None: __stack = StackSet()
+    __IGNORE_IF = False
+    for tree in master:
+        __stack.enter(Stack(__file, tree.line))
+        try:
+            if tree.code.is_eval: _eval(tree.code, __globals)
+            else:
+                # Execute Eval_~~~ code
+                if tree.code.codeType == CodeType.EXEC_CONDITION_IF:
+                    __IGNORE_IF = False
+                    if _eval(tree.code.kw["args"][0], __globals):
+                        __IGNORE_IF = True
+                        _run_tree(tree.childs, __globals, __file, __stack)
+                elif tree.code.codeType == CodeType.EXEC_CONDITION_ELIF:
+                    if (not __IGNORE_IF) and _eval(tree.code.kw["args"][0], __globals):
+                        __IGNORE_IF = True
+                        _run_tree(tree.childs, __globals, __file, __stack)
+                elif tree.code.codeType == CodeType.EXEC_CONDITION_ELSE:
+                    if (not __IGNORE_IF):
+                        __IGNORE_IF = True
+                        _run_tree(tree.childs, __globals, __file, __stack)
+                else: __IGNORE_IF = False
+        except __ExpressionException as e:
+            __last_stack = __stack.last
+            __copied_stack = deepcopy(__stack)
+            __copied_stack.exit()
+            __copied_stack.enter(Stack(__last_stack.loc, __last_stack.line))
+            raise HandledException(e, __copied_stack)
+        __stack.exit()
+    
 def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<string>"):
 
     __syntax, __err_lines = checkSyntax(__source)
@@ -362,58 +429,19 @@ def _exec(__source: str, __globals: Dict[str, Any] = None,  __file: str = "<stri
     
     try:
         
-        master: List[LineTree] = []
-        last_ident = 0
-        lines = __source.split("\n")
-        first_identify: Union[str, Void] = void
-        for i, line in enumerate(lines):
-            if line == "": continue
-            elif not (line[0] in (" ", "\t")):
-                master.append(LineTree(i, _compile(line)))
-                first_identify = void
-                last_ident = 0
-            else:
-                looking_identify:str = ""
-                code: str = ""
-                for char in list(line):
-                    if len(code) != 0: code += char
-                    elif char == " " or char == "\t": looking_identify += char
-                    else: code = char
-                if last_ident == 0:
-                    master[-1].add_child(LineTree(i, _compile(code)))
-                    first_identify = looking_identify
-                    last_ident = 1
-                else:
-                    last_ident = looking_identify.count(first_identify)
-                    eval("last" + ".childs[-1]" * (last_ident-1) + ".add_child(new)", {"last": master[-1], "new": LineTree(i, code)})
-        del last_ident, first_identify, lines, i, line
-        #print([str(l) for l in master])
+        master = _treeMap(__source)
 
         if __globals == None: __globals = {}
         putDefault(__globals)
 
-        lines = __source.split("\n")
-        __stack = StackSet()
-        
-        for tree in master:
-            __stack.enter(Stack(__file, tree.line))
-            try:
-                if tree.code.is_eval: _eval(tree.code, __globals)
-                else: print(tree, tree.code, splitArguments(tree.code.kw["args"]))
-            except __ExpressionException as e:
-                __last_stack = __stack.last
-                __copied_stack = deepcopy(__stack)
-                __copied_stack.exit()
-                __copied_stack.enter(Stack(__last_stack.loc, __last_stack.line))
-                raise HandledException(e, __copied_stack)
-            __stack.exit()
+        _run_tree(master, __globals, __file)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
         stack_statement = e.colStack.last
         print("Traceback:")
         for stack in e.stack.history:
             print("  "+"File \""+stack.loc+"\", line "+str(stack.line+1))
-            print("  "+"  "+lines[stack.line])
+            print("  "+"  "+__source.split("\n")[stack.line])
             print("  "+"  "+" "*stack_statement.colRange[0] + "^"*(stack_statement.colRange[1]-stack_statement.colRange[0]))
         print(e.exception.__class__.__name__ +": "+ str(e.exception))
-        return ExecuteResult(ExecuteResultType.RuntimeError, e.exception, e.stack.history)
+        return ExecuteResult(ExecuteResultType.RuntimeError, e.exception, e.stack.history, stack_statement)
