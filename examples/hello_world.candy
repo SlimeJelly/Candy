@@ -1,1 +1,1 @@
-println of ("Hello, world!")
+println of ("Hello, world!") #print of "Hello, world!"

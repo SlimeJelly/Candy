@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Set, Tuple, Union, Iterator, Literal, Iterable
-from dataclasses import dataclass#, field
+from dataclasses import dataclass, field
 from copy import copy, deepcopy
 from sys import argv as __sys_argv
 import re
@@ -85,17 +85,17 @@ class ColRange():
     start: int
     end: int
 
-# @dataclass()
-# class LoopData():
-#     values: Dict[int, Any] = field(default_factory=dict)
-#     next_index: int = 0
+@dataclass()
+class LoopData():
+    values: Dict[int, Any] = field(default_factory=dict)
+    next_index: int = 0
 
 @dataclass()
 class Stack():
     loc: str # file
     line: int
     col: ColRange
-    # loop: LoopData = field(default_factory=LoopData)
+    loop: LoopData = field(default_factory=LoopData)
 
 class StackSet():
     def __init__(self) -> None: self.stacks: List[Stack] = []
@@ -264,9 +264,8 @@ def match_parenthesis(__source: str):
     
 
 
-__original_dict: Dict = {}
-def putDefault(__dict: Dict[str, Any] = __original_dict):
-    if __dict is __original_dict: __dict = {}
+def putDefault(__dict: Dict[str, Any] = None):
+    if __dict is None: __dict = {}
     defaultKeys = list(__dict.keys())
     def __print(text): print(text, end="")
     def __println(text): print(text)
@@ -284,7 +283,6 @@ def putDefault(__dict: Dict[str, Any] = __original_dict):
     if not "asList"   in defaultKeys: __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
     if not "length"   in defaultKeys: __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
     if not "forever"  in defaultKeys: __dict["forever"]  = create_py_function("forever",  [], Forever)
-    if not "test"     in defaultKeys: __dict["test"]  = create_py_function("test",  ["to", Argument("ab"), "by", Argument("bc")], lambda ab, bc: __combine(ab, bc))
     if not "infinity" in defaultKeys: __dict["infinity"] = Infinity()
 
 def splitArguments(__source: str) -> List[str]:
@@ -645,4 +643,13 @@ if __candy_mode == "RUN":
         __source = f.read()
     _exec(__source, __file=__candy_file)
 elif __candy_mode == "TERMINAL":
-    pass
+    __global = {}
+    while True:
+        __source = [input(">>> ")]
+        if _remove_comment(__source[-1]).endswith(":"):
+            while True:
+                last_spacing = len(__source[-1])-len(__source[-1].lstrip())
+                if last_spacing == 0: break
+                __source.append(input("... "+" "*(last_spacing)))
+        _exec("\n".join(__source), __global)
+

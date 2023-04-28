@@ -7,7 +7,7 @@ Candy
 
 - [Information](#information)
 - [Using Candy](#using-candy)
-- [Documentation](#documentation)
+- [Documentation](#document)
 - [What's New](#whats-new)
 - [License](#license)
 
@@ -17,8 +17,8 @@ Candy
 
 ## Using Candy
 
-## Documentation
-[Click here to see documentation](https://github.com/SlimeJelly/Candy/blob/main/documentation.md)
+## Document
+[Click here to see documentation](https://github.com/SlimeJelly/Candy/blob/main/document.md)
 
 ## What's New
 [Click here to see updates](https://github.com/SlimeJelly/Candy/blob/main/update.md)
