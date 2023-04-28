@@ -1,0 +1,15 @@
+set $line to ("*") * (47)
+set $title to ($line) + (" [Multiplication Table] ") + ($line)
+println of ($title) 
+loop ((2) to (10) by (1)):
+    loop ((1) to (10) by (1)):
+        if ((loop-value-1) == (1)):
+            print of ("| ")
+        set $result to (loop-value-0) * (loop-value-1)
+        set $text to (asString of (loop-value-0)) + (" x ") + (asString of (loop-value-1)) + (" = ") + (asString of ($result))
+        if (($result) < (10)):
+            set $text to ($text) + (" ")
+        print of ($text)
+        print of (" | ")
+    println of ("")
+println of (("*") * (length of ($title)))
