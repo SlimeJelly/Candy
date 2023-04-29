@@ -116,14 +116,17 @@ class CodeType(Enum):
     PARENTHESIS = 20
 
     #Eval (100~)
+    #Eval - Datas (100~)
     EVAL_INTEGER = 100
     EVAL_DECIMAL = 101
     EVAL_STRING = 102
     EVAL_BOOLEAN = 103
     EVAL_VARIABLE = 104
 
+    #Eval - Special (110~)
     EVAL_RANGE = 110
 
+    #Eval - Work (150~)
     EVAL_EXECUTE = 150
     EVAL_SET = 151
     EVAL_CALC = 152
