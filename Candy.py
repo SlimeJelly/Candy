@@ -1,39 +1,30 @@
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Set, Tuple, Union, Iterator, Literal, Iterable
+from typing import Any, Callable, Dict, List, Set, Tuple, Union, Iterator, Literal
 from dataclasses import dataclass, field
 from copy import copy, deepcopy
 from sys import argv as __sys_argv
-import re
 from os.path import exists, sep
 from functools import reduce
+from re import compile as regxp_compile
 
-class Array(Iterable):
-    def __init__(self, *args):              self.iter = list(args)
-    def __setitem__(self, index, value):    self.iter[index] = value
-    def __delitem__(self, index):       del self.iter[index]
-    def __getitem__(self, index: Union[int, slice]):    
-        if type(index) == int:       return self.iter[index]
-        else:                        return Array(*self.iter[index])
-    def __iter__(self):              return iter(self.iter)
-    def __len__(self) -> int:        return len (self.iter)
-    def __str__(self):               return "{" + ", ".join(x.__repr__() for x in self.iter) + "}"
-    def __repr__(self):              return "Array(" + ", ".join(str(x) for x in self.iter) + ")"
-    def __add__(self, other):        return Array(*(self.iter + other.iter))
+class Array(list):
+    def __init__(self, *args):              super().__init__(args)
+    def __iter__(self):              return super().__iter__()
+    def __len__(self) -> int:        return super().__len__()
+    def __str__(self):               return "{" + ", ".join(str(x) for x in self) + "}"
+    def __repr__(self):              return "Array(" + ", ".join(x.__repr__() for x in self) + ")"
+    def __add__(self, other):        return Array(*self, *other)
     def forEach(self, func):
-        for x in self.iter: func(x)
-    def map(self, func):             return Array(*(func(x) for x in self.iter))
-    def filter(self, func):          return Array(*(x for x in self.iter if func(x)))
-    def withItems(self, *items):     return Array(*(self.iter + [*items]))
-    def collect(self, target, func): return reduce(func, self.iter, target)
-    def has(self, *target):          return Array(*target).filter(lambda item: item in self.iter).len() == len(target)
-    def len(self):                   return len(self.iter)
+        for x in self: func(x)
+    def sorted(self, key=None, reverse=False): self.sort(key=key, reverse=reverse); return self
+    def map(self, func):             return Array(*(func(x) for x in self))
+    def filter(self, func):          return Array(*(x for x in self if func(x)))
+    def withItems(self, *items):     return Array(*(self + [*items]))
+    def collect(self, target, func): return reduce(func, self, target)
+    def has(self, item):             return item in self
 
 sys_argv: Array = Array(*__sys_argv)
 del __sys_argv
-
-__sweety_sys = {
-    "loop": {"values": {}, "next-index": 0}
-}
 
 __candy_location    : str                  = __file__
 __candy_interpreter : Literal["PY", "EXE"] = __candy_location.split(".")[-1].upper()
@@ -186,6 +177,7 @@ class SyntaxResultType(Enum):
     UnexpectedSyntax = auto()
     MixedIdentition = auto()
     MultiTab = auto()
+    UnexpectedIndent=auto()
     def toException(self): ...
 
 class ExecuteResultType(Enum):
@@ -234,18 +226,18 @@ EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
 EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
 EXPRESSION_INTEGER = "[1-9][0-9]*|0"
 EXPRESSION_DECIMAL = "[0-9]*.[0-9]+"
-COMPILED_EXPRESSION_EMPTY = re.compile("[ |\t]+")
-COMPILED_EXPRESSION_VARIABLE = re.compile(EXPRESSION_VARIABLE)
-COMPILED_EXPRESSION_STRING = re.compile("\"[^\"\n]*\"")
-COMPILED_EXPRESSION_INTEGER = re.compile(EXPRESSION_INTEGER)
-COMPILED_EXPRESSION_DECIMAL = re.compile(EXPRESSION_DECIMAL)
-COMPILED_EXPRESSION_BOOLEAN = re.compile("(true|false)")
-COMPILED_EXPRESSION_SET = re.compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_FUNCTION = re.compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
-COMPILED_EXPRESSION_WORD = re.compile("\\w+")
-COMPILED_EXPRESSION_BLOCKHOLDER = re.compile("(if|elif|else|for|while|loop)"+"([^\n]*):")
-COMPILED_EXPRESSION_LOOP_VALUE = re.compile("loop-value-\\d+")
-COMPILED_EXPRESSION_LOOP_CONTROL = re.compile("(break|continue)")
+COMPILED_EXPRESSION_EMPTY = regxp_compile("[ |\t]+")
+COMPILED_EXPRESSION_VARIABLE = regxp_compile(EXPRESSION_VARIABLE)
+COMPILED_EXPRESSION_STRING = regxp_compile("\"[^\"\n]*\"")
+COMPILED_EXPRESSION_INTEGER = regxp_compile(EXPRESSION_INTEGER)
+COMPILED_EXPRESSION_DECIMAL = regxp_compile(EXPRESSION_DECIMAL)
+COMPILED_EXPRESSION_BOOLEAN = regxp_compile("(true|false)")
+COMPILED_EXPRESSION_SET = regxp_compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_FUNCTION = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
+COMPILED_EXPRESSION_WORD = regxp_compile("\\w+")
+COMPILED_EXPRESSION_BLOCKHOLDER = regxp_compile("(if|elif|else|for|while|loop)"+"([^\n]*):")
+COMPILED_EXPRESSION_LOOP_VALUE = regxp_compile("loop-value-\\d+")
+COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
 
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
@@ -481,7 +473,8 @@ def _compile(expression: str, col: ColRange = None) -> Code:
     finally: ...
 
 def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSet):
-    __stack.last.col = __code.col
+    __looking__stack = __stack.last
+    __looking__stack.col = __code.col
     try:
         if __code.codeType == CodeType.EMPTY: return void
         if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __globals, __file, __stack)
@@ -510,9 +503,9 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
             return void_set_exp
         if __code.codeType == CodeType.EVAL_CALC: return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __globals, __file, __stack) for arg in __code.kw["args"]]})
         if __code.codeType == CodeType.EXEC_LOOP_VALUE:
-            if not __code.kw["index"] in __sweety_sys["loop"]["values"]:
-                raise SyntaxError("Loop value of index '"+str(__code.kw["index"])+"' is overloading. (" + ("no loop detected" if __sweety_sys["loop"]["values"] == {} else "max loop index: "+str(max(__sweety_sys["loop"]["values"].keys()))) + ")")
-            return __sweety_sys["loop"]["values"][__code.kw["index"]]
+            if not __code.kw["index"] in __looking__stack.loop.values:
+                raise SyntaxError("Loop value of index '"+str(__code.kw["index"])+"' is overloading. (" + ("no loop detected" if __looking__stack.loop.values == {} else "max loop index: "+str(max(__looking__stack.loop.values.keys()))) + ")")
+            return __looking__stack.loop.values[__code.kw["index"]]
         if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __globals, __file, __stack), _eval(__code.kw["end"], __globals, __file, __stack), _eval(__code.kw["sep"], __globals, __file, __stack))
     except __EvalException: raise
     except Exception as e: raise __EvalException(e, __code.col)
@@ -549,8 +542,14 @@ def _treeMap(__source: str) -> List[LineTree]:
 def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __stack: StackSet = None):
     if __stack == None: __stack = StackSet()
     __IGNORE_IF = False
+    if len(__stack.stacks) == 0 or __stack.last.loc != __file: 
+        __looking__stack = Stack(__file, -1, (-1, -1))
+        __stack.enter(__looking__stack)
+    else:
+        __looking__stack = __stack.last
     for tree in master:
-        __stack.enter(Stack(__file, tree.line, tree.code.col))
+        __stack.last.line = tree.line
+        __stack.last.col = tree.code.col
         try:
             if tree.code.is_eval:
                 match tree.code.codeType:
@@ -583,19 +582,18 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                 elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
                     __iter = _eval(tree.code.kw["args"][0], __globals, __file, __stack)
                     if type(__iter) == int: __iter = range(__iter)
-                    __index: int = __sweety_sys["loop"]["next-index"]
-                    __sweety_sys["loop"]["next-index"] += 1
+                    __index: int = __looking__stack.loop.next_index
+                    __looking__stack.loop.next_index += 1
                     for __item in __iter:
-                        __sweety_sys["loop"]["values"][__index] = __item
+                        __looking__stack.loop.values[__index] = __item
                         loop_control:Void = _run_tree(tree.childs, __globals, __file, __stack)
                         if loop_control == void_loop_continue: continue
                         elif loop_control == void_loop_break: break
-                    __sweety_sys["loop"]["next-index"] -= 1
-                    del __sweety_sys["loop"]["values"][__index]
+                    __looking__stack.loop.next_index -= 1
+                    del __looking__stack.loop.values[__index]
                 
                 if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
         except __EvalException as e: raise HandledException(e, deepcopy(__stack))
-        __stack.exit()
     return void
 
 def _remove_comment(__source: str) -> str:
@@ -605,12 +603,12 @@ def _remove_comment(__source: str) -> str:
         if l == "": result += "\n"; continue
         for char in list(l):
             if char == "\"": __is_str = not __is_str
-            if char == "#" and not __is_str: result += "\n"; break
+            if char == "#" and not __is_str: break
             else: result += char
         result += "\n"
-    return result
+    return result[:-1]
 
-def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __ignoreSyntax: bool=False):
+def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __stack: StackSet = None, __ignoreSyntax: bool=False):
     if not __ignoreSyntax and type(__source) == str:
         __Tsource = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
         __syntax, __err_lines = checkSyntax(__Tsource)
@@ -626,7 +624,7 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
         if __globals == None: __globals = {}
         putDefault(__globals)
 
-        _run_tree(__sourceTree, __globals, __file)
+        _run_tree(__sourceTree, __globals, __file, __stack)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
         print("Traceback:")
@@ -645,11 +643,14 @@ if __candy_mode == "RUN":
 elif __candy_mode == "TERMINAL":
     __global = {}
     while True:
-        __source = [input(">>> ")]
-        if _remove_comment(__source[-1]).endswith(":"):
-            while True:
-                last_spacing = len(__source[-1])-len(__source[-1].lstrip())
-                if last_spacing == 0: break
-                __source.append(input("... "+" "*(last_spacing)))
-        _exec("\n".join(__source), __global)
-
+        try:
+            __source = [input(">>> ")]
+            if _remove_comment(__source[-1]).endswith(":"):
+                while True:
+                    last_spacing = len(__source[-1])-len(__source[-1].lstrip())
+                    if len(__source) > 1 and last_spacing == 0: break
+                    __source.append(input("... "+" "*(last_spacing)))
+            _exec("\n".join(__source), __global)
+        except EOFError as eofe: break
+        except KeyboardInterrupt as ki: break
+        except Exception as e: pass
