@@ -7,10 +7,17 @@ from os.path import exists, sep
 from functools import reduce
 from re import compile as regxp_compile
 
+def ItSelf(x): return x
+
 class Array(list):
     def __init__(self, *args):              super().__init__(args)
     def __iter__(self):              return super().__iter__()
     def __len__(self) -> int:        return super().__len__()
+    def __getitem__(self, key):      return Array(*super().__getitem__(key))
+    def __setitem__(self, key, val): return Array(*super().__setitem__(key, val))
+    def __delitem__(self, key):      return super().__delitem__(key)
+    def __contains__(self, item):    return super().__contains__(item)
+    def __reversed__(self):          return super().__reversed__()
     def __str__(self):               return "{" + ", ".join(str(x) for x in self) + "}"
     def __repr__(self):              return "Array(" + ", ".join(x.__repr__() for x in self) + ")"
     def __add__(self, other):        return Array(*self, *other)
@@ -31,7 +38,7 @@ __candy_interpreter : Literal["PY", "EXE"] = __candy_location.split(".")[-1].upp
 __candy_file        : Union[str, None]     = sys_argv.filter(lambda loc: loc.endswith(".candy"))\
                                                      .map   (lambda loc: loc.replace("\\", sep).replace("/", sep))\
                                                      .collect(None, lambda target, loc: loc if target == None else target)
-__candy_mode        : Literal["RUN", "COMPILE", "TERMINAL"] = "TERMINAL" if __candy_file == None else "COMPILE" if sys_argv.has("-compile") else "RUN"
+__candy_mode        : Literal["RUN", "COMPILE", "TERMINAL"] = "TERMINAL" if __candy_file == None else "COMPILE" if "-compile" in sys_argv else "RUN"
 if type(__candy_file) == str and not exists(__candy_file): 
     print("Unable to find file \""+__candy_file+"\"")
     exit(1)
@@ -112,8 +119,7 @@ class HandledException(Exception):
 class CodeType(Enum):
     #System (0~)
     EMPTY = 0
-    COMMENT = 10
-    PARENTHESIS = 20
+    PARENTHESIS = 10
 
     #Eval (100~)
     #Eval - Datas (100~)
@@ -162,6 +168,7 @@ class Code():
     def asCData(self, ):
         return 
 
+
 class LineTree():
     def __init__(self, line: int, code: Code, master: Union[Void, "LineTree"] = void):
         self.line = line
@@ -172,6 +179,12 @@ class LineTree():
         child.master = self
         self.childs.append(child)
     def __str__(self) -> str: return "["+str(self.line)+"]"+"( "+", ".join([str(l) for l in self.childs])+" )"
+
+# class Module():
+#     def __init__(self, name: str, tree: List[LineTree], colmap: ColMapper) -> None:
+#         self.name = name
+#         self.tree = tree
+#         self.colmap = colmap
 
 class SyntaxResultType(Enum):
     Right = 0
@@ -236,9 +249,9 @@ COMPILED_EXPRESSION_INTEGER = regxp_compile(EXPRESSION_INTEGER)
 COMPILED_EXPRESSION_DECIMAL = regxp_compile(EXPRESSION_DECIMAL)
 COMPILED_EXPRESSION_BOOLEAN = regxp_compile("(true|false)")
 COMPILED_EXPRESSION_SET = regxp_compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_FUNCTION = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
+COMPILED_EXPRESSION_CALL_FUNC = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
 COMPILED_EXPRESSION_WORD = regxp_compile("\\w+")
-COMPILED_EXPRESSION_BLOCKHOLDER = regxp_compile("(if|elif|else|for|while|loop)"+"([^\n]*):")
+COMPILED_EXPRESSION_BLOCKHOLDER = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
 COMPILED_EXPRESSION_LOOP_VALUE = regxp_compile("loop-value-\\d+")
 COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
 
@@ -334,11 +347,16 @@ def checkExpressionSyntax(__source: str) -> bool:
         elif codeTypeString in ("loop"):
             sa = splitArguments(textgroup)
             return len(sa) == 1 and sa[0][0] and sa[0][1].startswith("(") and sa[0][1].endswith(")") and checkExpressionSyntax(sa[0][1][1:-1])
+        elif codeTypeString in ("function"):
+            sa = splitArguments(textgroup)
+            return len(sa) >= 1 and (not sa[0][0]) and not (False in [(
+                COMPILED_EXPRESSION_VARIABLE.fullmatch(token[1:-1]) != None if _type else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
+            ) for _type, token in sa[1:]])
     if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
         
-    if COMPILED_EXPRESSION_FUNCTION.fullmatch(__source) != None:
-        match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(__source)
+    if COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source) != None:
+        match_function = COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source)
         return COMPILED_EXPRESSION_WORD.fullmatch(match_function.group(1)) != None \
          and not (False in [(
             checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
@@ -423,14 +441,18 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             return Code(CodeType.EVAL_VARIABLE, deepcopy(col), value=expression[1:])
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
             codeTypeString = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
-            codeType = {
-                "if"   : CodeType.EXEC_CONDITION_IF,
-                "elif" : CodeType.EXEC_CONDITION_ELIF,
-                "else" : CodeType.EXEC_CONDITION_ELSE,
-                "while": CodeType.EXEC_LOOP_WHILE,
-                "loop" : CodeType.EXEC_LOOP_LOOP
-            }[codeTypeString]
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
+            if codeTypeString == "function":
+                return Code(CodeType.EXEC_DEFINE_FUNCTION, deepcopy(col), name=split_result[0][1], 
+                            tokens=tuple(Array(*split_result)[1:].map(lambda v: (ItSelf if not v[0] else lambda k: Argument(k[2:-1]))(v[1])))
+                            )
+            codeType = {
+                "if"      : CodeType.EXEC_CONDITION_IF,
+                "elif"    : CodeType.EXEC_CONDITION_ELIF,
+                "else"    : CodeType.EXEC_CONDITION_ELSE,
+                "while"   : CodeType.EXEC_LOOP_WHILE,
+                "loop"    : CodeType.EXEC_LOOP_LOOP,
+            }[codeTypeString]
             parse_result: List[Union[str, Code]] = []
             __col_st = col.start + len(codeTypeString) + 1
             for sps in split_result: # split string
@@ -444,8 +466,8 @@ def _compile(expression: str, col: ColRange = None) -> Code:
 
 
         # 
-        elif COMPILED_EXPRESSION_FUNCTION.fullmatch(expression) != None:
-            match_function = COMPILED_EXPRESSION_FUNCTION.fullmatch(expression)
+        elif COMPILED_EXPRESSION_CALL_FUNC.fullmatch(expression) != None:
+            match_function = COMPILED_EXPRESSION_CALL_FUNC.fullmatch(expression)
             if match_function == None: return SyntaxError()
             split_result = splitArguments(match_function.group(2))
             parse_result: List[Union[str, Code]] = []
@@ -468,6 +490,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
                     i += 1
                     __args.append(_compile(__value[1:-1], ColRange(__col_st+1, __col_st+len(__value)-1)))
                     __evalCode += "__args[" + str(i-1) + "]"
+                __evalCode += " "
                 __col_st += len(__value) + 1
             return Code(CodeType.EVAL_CALC, deepcopy(col), evalCode=__evalCode, args=tuple(__args))
     except Exception: raise
@@ -509,6 +532,7 @@ def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSe
             return __looking__stack.loop.values[__code.kw["index"]]
         if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __globals, __file, __stack), _eval(__code.kw["end"], __globals, __file, __stack), _eval(__code.kw["sep"], __globals, __file, __stack))
     except __EvalException: raise
+    except HandledException: raise
     except Exception as e: raise __EvalException(e, __code.col)
 
 def _treeMap(__source: str) -> List[LineTree]:
@@ -591,6 +615,8 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                         elif loop_control == void_loop_break: break
                     __looking__stack.loop.next_index -= 1
                     del __looking__stack.loop.values[__index]
+                elif tree.code.codeType == CodeType.EXEC_DEFINE_FUNCTION:
+                    __globals[tree.code.kw["name"]] = create_function(tree.code.kw["name"], tree.code.kw['tokens'], tree.childs)
                 
                 if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
         except __EvalException as e: raise HandledException(e, deepcopy(__stack))
@@ -645,11 +671,10 @@ elif __candy_mode == "TERMINAL":
     while True:
         try:
             __source = [input(">>> ")]
-            if _remove_comment(__source[-1]).rstrip().endswith(":"):
-                while True:
-                    last_spacing = len(__source[-1])-len(__source[-1].lstrip())
-                    if len(__source) > 1 and last_spacing == 0: break
-                    __source.append(input("... "+" "*(last_spacing)))
+            while True:
+                last_spacing = len(__source[-1])-len(__source[-1].lstrip())
+                if (not _remove_comment(__source[-1]).rstrip().endswith(":")) or (len(__source) > 1 and last_spacing == 0): break
+                __source.append(input("... "))
             _exec("\n".join(__source), __global)
         except EOFError as eofe: break
         except KeyboardInterrupt as ki: break
