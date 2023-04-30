@@ -256,8 +256,6 @@ def match_parenthesis(__source: str):
         if __char == ")": __stack -= 1
         if __stack == 0 and __index != len(__source)-1: return False
     return __stack == 0
-    
-
 
 def putDefault(__dict: Dict[str, Any] = None):
     if __dict is None: __dict = {}
@@ -543,13 +541,12 @@ def _treeMap(__source: str) -> List[LineTree]:
     return master
 
 def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __stack: StackSet = None):
-    if __stack == None: __stack = StackSet()
-    __IGNORE_IF = False
-    if len(__stack.stacks) == 0 or __stack.last.loc != __file: 
+    if __stack == None:
+        __stack = StackSet()
         __looking__stack = Stack(__file, -1, (-1, -1))
         __stack.enter(__looking__stack)
-    else:
-        __looking__stack = __stack.last
+    __IGNORE_IF = False
+    __looking__stack = __stack.last
     for tree in master:
         __stack.last.line = tree.line
         __stack.last.col = tree.code.col
@@ -648,7 +645,7 @@ elif __candy_mode == "TERMINAL":
     while True:
         try:
             __source = [input(">>> ")]
-            if _remove_comment(__source[-1]).endswith(":"):
+            if _remove_comment(__source[-1]).rstrip().endswith(":"):
                 while True:
                     last_spacing = len(__source[-1])-len(__source[-1].lstrip())
                     if len(__source) > 1 and last_spacing == 0: break

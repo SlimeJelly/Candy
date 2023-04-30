@@ -1,4 +1,4 @@
-Update of Candy 9.1.1
+Update of Candy 9.1.2
 ===
 
- - Moved Loop data to Stack from global dictionary
+ - Very tiny stack system modification
