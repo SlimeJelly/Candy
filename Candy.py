@@ -1,7 +1,7 @@
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Set, Tuple, Union, Iterator, Literal
 from dataclasses import dataclass, field
-from copy import copy, deepcopy
+from copy import deepcopy
 from sys import argv as __sys_argv
 from os.path import exists, sep
 from functools import reduce
@@ -44,6 +44,28 @@ if type(__candy_file) == str and not exists(__candy_file):
     exit(1)
 del exists, sep
 
+EXPRESSION_SPACE = "[ |\t]+"
+EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
+EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
+EXPRESSION_INTEGER = "[1-9][0-9]*|0"
+EXPRESSION_DECIMAL = "[0-9]*.[0-9]+"
+COMPILED_EXPRESSION_EMPTY = regxp_compile("[ |\t]+")
+COMPILED_EXPRESSION_VARIABLE = regxp_compile(EXPRESSION_VARIABLE)
+COMPILED_EXPRESSION_STRING = regxp_compile("\"[^\"\n]*\"")
+COMPILED_EXPRESSION_INTEGER = regxp_compile(EXPRESSION_INTEGER)
+COMPILED_EXPRESSION_DECIMAL = regxp_compile(EXPRESSION_DECIMAL)
+COMPILED_EXPRESSION_BOOLEAN = regxp_compile("(true|false)")
+COMPILED_EXPRESSION_SET = regxp_compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_CALL_FUNC = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
+COMPILED_EXPRESSION_WORD = regxp_compile("\\w+")
+COMPILED_EXPRESSION_BLOCKHOLDER = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
+COMPILED_EXPRESSION_LOOP_VALUE = regxp_compile("loop-value-\\d+")
+COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
+del regxp_compile
+
+OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
+                   "==", "!=", "<", ">", "<=", ">=",)
+
 @dataclass(frozen=True)
 class Void():
     data: str
@@ -67,17 +89,24 @@ class Function():
         self.__args: List[Argument] = [token for token in tokens if type(token) == Argument]
         self.less_args = len([arg for arg in self.__args if arg.auto is void_missing_arg])
         self.func = func
-    def __call__(self, variables: List[Any], _globals: Dict[str, Any], _file: str, _stack: "StackSet") -> Any:
+    def __call__(self, variables: List[Any], _file: str, _stack: "StackSet") -> Any:
         if len(self.__args) != len(variables): pass # error
         if len(variables) < self.less_args: raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
         variables += (void_missing_arg,) * (len(self.__args) - len(variables))
-        localDict: Dict[str, Any] = {arg_slot.name:(var if type(var) != Void else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
+        localDict: Dict[str, Any] = {arg_slot.name:Variable(var if type(var) != Void else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
         if void_missing_arg in localDict.values(): raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
-        return self.func(localDict, _globals, _file, _stack)
+        innerStack = (lambda lastStack: Stack(_file, lastStack.line, lastStack.col, lastStack, data=localDict))(_stack.last)
+        _stack.enter(innerStack)
+        v = self.func(localDict, _file, _stack)
+        _stack.exit()
+        return v
 
 def get_py_type_check_func(_Type: type) -> Callable[[Any], bool]: return lambda obj: type(obj) == _Type
 
-
+@dataclass()
+class Variable():
+    value: Any
+    
 @dataclass(frozen=True)
 class ColRange():
     start: int
@@ -93,12 +122,43 @@ class Stack():
     loc: str # file
     line: int
     col: ColRange
+    master: Union["Stack", None] = None
     loop: LoopData = field(default_factory=LoopData)
+    data: Dict[str, Variable] = field(default_factory=dict)
+    def getData(self, name: str):
+        if name in self.data: return self.data[name].value
+        elif self.master != None: return self.master.getData(name)
+        else: raise NameError("name '"+name+"' is not defined")
+
 
 class StackSet():
-    def __init__(self) -> None: self.stacks: List[Stack] = []
-    def enter(self, newStack: Stack) -> None: self.stacks.append(newStack)
-    def exit(self) -> None: self.stacks.pop()
+    def __init__(self) -> None:
+        self.stacks: List[Stack] = [Stack("Candy", 0, ColRange(0, 0))]
+        __dict = {}
+        def __print(text): print(text, end="")
+        def __println(text): print(text)
+        def __combine(t1, t2): return str(t1)+str(t2)
+        def __repeat(text, count): return str(text)*count
+        __dict["print"]    = create_py_function("print",    ["of", Argument("text")], __print)
+        __dict["println"]  = create_py_function("println",  ["of", Argument("text")], __println)
+        __dict["combine"]  = create_py_function("combine",  ["of", Argument("t1"), "and", Argument("t2")], __combine)
+        __dict["repeat"]   = create_py_function("repeat",   ["of", Argument("text"), "for", Argument("count"), "times"], __repeat)
+        __dict["range"]    = create_py_function("range",    ["of", Argument("start"), "to", Argument("end"), "by", Argument("sep", auto=1)], lambda start, end, sep: range(start, end, sep))
+        __dict["asString"] = create_py_function("asString", ["of", Argument("text")], lambda text: str(text))
+        __dict["asInt"]    = create_py_function("asInt",    ["of", Argument("text")], lambda text: int(text))
+        __dict["asFloat"]  = create_py_function("asFloat",  ["of", Argument("text")], lambda text: float(text))
+        __dict["asBool"]   = create_py_function("asBool",   ["of", Argument("text")], lambda text: bool(text))
+        __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
+        __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
+        __dict["forever"]  = create_py_function("forever",  [], Forever)
+        __dict["infinity"] = Infinity()
+        self.stacks[-1].data = { name: Variable(value) for name, value in __dict.items() }
+    def enter(self, newStack: Stack) -> None:
+        self.stacks.append(newStack)
+        if len(self.stacks): self.stacks[-1].master = self.stacks[-2]
+    def exit(self) -> None:
+        if len(self.stacks) <= 1: raise Exception("StackSet: cannot exit from root stack")
+        del self.stacks[-1]
     @property
     def last(self) -> Stack: return self.stacks[-1]
     @property
@@ -122,7 +182,7 @@ class CodeType(Enum):
     PARENTHESIS = 10
 
     #Eval (100~)
-    #Eval - Datas (100~)
+    #Eval - Datas (100~)F
     EVAL_INTEGER = 100
     EVAL_DECIMAL = 101
     EVAL_STRING = 102
@@ -228,35 +288,12 @@ class Forever(Iterator):
     def __next__(self) -> int: self.index += 1; return self.index
 
 def create_function(name: str, parameters: List[Union[str, Argument]], code: List[LineTree]) -> Function:
-    def __func(arguments: Dict[str, Any], __globals: Dict[str, Any], __file: str, __stack: StackSet):
-        __locals = copy(__globals)
-        __locals.update(arguments)
-        _run_tree(code, __locals, __file, __stack)
+    def __func(arguments: Dict[str, Any], __file: str, __stack: StackSet):
+        _run_tree(code, __file, __stack)
     return Function(name, parameters, __func)
 
 def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: Callable):
-    return Function(func_name, tokens, lambda arguments, _1, _2, _3: func(**arguments))
-
-EXPRESSION_SPACE = "[ |\t]+"
-EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
-EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
-EXPRESSION_INTEGER = "[1-9][0-9]*|0"
-EXPRESSION_DECIMAL = "[0-9]*.[0-9]+"
-COMPILED_EXPRESSION_EMPTY = regxp_compile("[ |\t]+")
-COMPILED_EXPRESSION_VARIABLE = regxp_compile(EXPRESSION_VARIABLE)
-COMPILED_EXPRESSION_STRING = regxp_compile("\"[^\"\n]*\"")
-COMPILED_EXPRESSION_INTEGER = regxp_compile(EXPRESSION_INTEGER)
-COMPILED_EXPRESSION_DECIMAL = regxp_compile(EXPRESSION_DECIMAL)
-COMPILED_EXPRESSION_BOOLEAN = regxp_compile("(true|false)")
-COMPILED_EXPRESSION_SET = regxp_compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_CALL_FUNC = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
-COMPILED_EXPRESSION_WORD = regxp_compile("\\w+")
-COMPILED_EXPRESSION_BLOCKHOLDER = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
-COMPILED_EXPRESSION_LOOP_VALUE = regxp_compile("loop-value-\\d+")
-COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
-
-OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
-                   "==", "!=", "<", ">", "<=", ">=",)
+    return Function(func_name, tokens, lambda arguments, _1, _2: func(**{k:v.value for k, v in arguments.items()}))
 
 def match_parenthesis(__source: str):
     if not (__source.startswith("(") and __source.endswith(")")): return False
@@ -269,27 +306,6 @@ def match_parenthesis(__source: str):
         if __char == ")": __stack -= 1
         if __stack == 0 and __index != len(__source)-1: return False
     return __stack == 0
-
-def putDefault(__dict: Dict[str, Any] = None):
-    if __dict is None: __dict = {}
-    defaultKeys = list(__dict.keys())
-    def __print(text): print(text, end="")
-    def __println(text): print(text)
-    def __combine(t1, t2): return str(t1)+str(t2)
-    def __repeat(text, count): return str(text)*count
-    if not "print"    in defaultKeys: __dict["print"]    = create_py_function("print",    ["of", Argument("text")], __print)
-    if not "println"  in defaultKeys: __dict["println"]  = create_py_function("println",  ["of", Argument("text")], __println)
-    if not "combine"  in defaultKeys: __dict["combine"]  = create_py_function("combine",  ["of", Argument("t1"), "and", Argument("t2")], __combine)
-    if not "repeat"   in defaultKeys: __dict["repeat"]   = create_py_function("repeat",   ["of", Argument("text"), "for", Argument("count"), "times"], __repeat)
-    if not "range"    in defaultKeys: __dict["range"]    = create_py_function("range",    ["of", Argument("start"), "to", Argument("end"), "by", Argument("sep", auto=1)], lambda start, end, sep: range(start, end, sep))
-    if not "asString" in defaultKeys: __dict["asString"] = create_py_function("asString", ["of", Argument("text")], lambda text: str(text))
-    if not "asInt"    in defaultKeys: __dict["asInt"]    = create_py_function("asInt",    ["of", Argument("text")], lambda text: int(text))
-    if not "asFloat"  in defaultKeys: __dict["asFloat"]  = create_py_function("asFloat",  ["of", Argument("text")], lambda text: float(text))
-    if not "asBool"   in defaultKeys: __dict["asBool"]   = create_py_function("asBool",   ["of", Argument("text")], lambda text: bool(text))
-    if not "asList"   in defaultKeys: __dict["asList"]   = create_py_function("asList",   ["of", Argument("text")], lambda text: list(text))
-    if not "length"   in defaultKeys: __dict["length"]   = create_py_function("length",   ["of", Argument("text")], lambda text: len(text))
-    if not "forever"  in defaultKeys: __dict["forever"]  = create_py_function("forever",  [], Forever)
-    if not "infinity" in defaultKeys: __dict["infinity"] = Infinity()
 
 def splitArguments(__source: str) -> List[str]:
     split_result: List[List[Union[bool, str]]] = [[True, ""]]
@@ -313,8 +329,26 @@ def splitArguments(__source: str) -> List[str]:
             else: split_result[-1][1] += char
     return list(map(tuple, filter(lambda v: v[1] != "", split_result)))
 
-def checkExpressionSyntax(__source: str) -> bool:
+def parse_string(__source: str) -> str:
+    result = ""
+    is_escape = False
+    for char in __source[1:-1]:
+        if is_escape:
+            if char == "n": result += "\n"
+            elif char == "t": result += "\t"
+            elif char == "r": result += "\r"
+            elif char == "0": result += "\0"
+            elif char == "\\": result += "\\"
+            elif char == "\"": result += "\""
+            else: result += char
+            is_escape = False
+        elif char == "\\":
+            is_escape = True
+        else:
+            result += char
+    return result
 
+def checkExpressionSyntax(__source: str) -> bool:
     __source = __source.lstrip()
     if __source == "" or COMPILED_EXPRESSION_EMPTY.fullmatch(__source) != None: return True
     if (match_parenthesis(__source)): 
@@ -412,7 +446,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
         elif match_parenthesis(expression): return Code(CodeType.PARENTHESIS, col, code=_compile(expression[1:-1], ColRange(col.start+1, col.end-1)))
         elif COMPILED_EXPRESSION_INTEGER     .fullmatch(expression) != None: return Code(CodeType.EVAL_INTEGER , deepcopy(col), value=int  (expression))
         elif COMPILED_EXPRESSION_DECIMAL     .fullmatch(expression) != None: return Code(CodeType.EVAL_DECIMAL , deepcopy(col), value=float(expression))
-        elif COMPILED_EXPRESSION_STRING      .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(col), value=eval (expression))
+        elif COMPILED_EXPRESSION_STRING      .fullmatch(expression) != None: return Code(CodeType.EVAL_STRING  , deepcopy(col), value=parse_string (expression))
         elif COMPILED_EXPRESSION_BOOLEAN     .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(col), value=bool (expression))
         elif COMPILED_EXPRESSION_LOOP_VALUE  .fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_VALUE, deepcopy(col), index=int(expression.replace("loop-value-", "")))
         elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(col))
@@ -496,41 +530,45 @@ def _compile(expression: str, col: ColRange = None) -> Code:
     except Exception: raise
     finally: ...
 
-def _eval(__code: Code, __globals: Dict[str, Any], __file: str, __stack: StackSet):
+def _eval(__code: Code, __file: str, __stack: StackSet):
     __looking__stack = __stack.last
     __looking__stack.col = __code.col
     try:
         if __code.codeType == CodeType.EMPTY: return void
-        if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __globals, __file, __stack)
+        if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __file, __stack)
         if __code.codeType == CodeType.EVAL_INTEGER: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_DECIMAL: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_STRING:  return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_BOOLEAN: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_VARIABLE:
-            if __code.kw["value"] in __globals: return __globals[__code.kw["value"]]
-            else: raise NameError("name '"+__code.kw["value"]+"' is not defined")
+            return __stack.last.getData(__code.kw["value"])
+            # if __code.kw["value"] in __stack.last.data: return __globals[__code.kw["value"]]
+            # else: raise NameError("name '"+__code.kw["value"]+"' is not defined")
         if __code.codeType == CodeType.EVAL_EXECUTE:
-            if not (__code.kw["target"] in __globals):
-                raise NameError("name '"+__code.kw["target"]+"' is not defined")
-            target: Function = __globals[__code.kw["target"]]
-            arguments = tuple([_eval(arg, __globals, __file, __stack) for arg in __code.kw["args"] if isinstance(arg, Code)])
+            # if not (__code.kw["target"] in __globals):
+            #     raise NameError("name '"+__code.kw["target"]+"' is not defined")
+            # target: Function = __globals[__code.kw["target"]]
+            target: Function = __stack.last.getData(__code.kw["target"])
+            arguments = tuple([_eval(arg, __file, __stack) for arg in __code.kw["args"] if isinstance(arg, Code)])
             for value in arguments:
                 if value is void_do_exp: raise SyntaxError("Function arguments must not be DO expression")
                 if value is void_set_exp: raise SyntaxError("Function arguments must not be SET expression")
-            result = target(arguments, __globals, __file, __stack)
+            result = target(arguments, __file, __stack)
             return result
         if __code.codeType == CodeType.EVAL_SET:
-            value = _eval(__code.kw["value"], __globals, __file, __stack)
+            value = _eval(__code.kw["value"], __file, __stack)
             if value is void_do_exp: raise SyntaxError("SET expression must not be DO expression")
             if value is void_set_exp: raise SyntaxError("SET expression must not be SET expression")
-            __globals[__code.kw["var"]] = value
+            __stack.last.data[__code.kw["var"]] = Variable(value)
             return void_set_exp
-        if __code.codeType == CodeType.EVAL_CALC: return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __globals, __file, __stack) for arg in __code.kw["args"]]})
+        if __code.codeType == CodeType.EVAL_CALC:
+            return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __file, __stack) for arg in __code.kw["args"]]})
         if __code.codeType == CodeType.EXEC_LOOP_VALUE:
             if not __code.kw["index"] in __looking__stack.loop.values:
+                print(*map(lambda o: o.line,__stack.stacks))
                 raise SyntaxError("Loop value of index '"+str(__code.kw["index"])+"' is overloading. (" + ("no loop detected" if __looking__stack.loop.values == {} else "max loop index: "+str(max(__looking__stack.loop.values.keys()))) + ")")
             return __looking__stack.loop.values[__code.kw["index"]]
-        if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __globals, __file, __stack), _eval(__code.kw["end"], __globals, __file, __stack), _eval(__code.kw["sep"], __globals, __file, __stack))
+        if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __file, __stack), _eval(__code.kw["end"], __file, __stack), _eval(__code.kw["sep"], __file, __stack))
     except __EvalException: raise
     except HandledException: raise
     except Exception as e: raise __EvalException(e, __code.col)
@@ -564,11 +602,7 @@ def _treeMap(__source: str) -> List[LineTree]:
                 eval("last" + ".childs[-1]" * (last_ident-1) + ".add_child(new)", {"last": master[-1], "new": LineTree(i, _compile(code))})
     return master
 
-def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __stack: StackSet = None):
-    if __stack == None:
-        __stack = StackSet()
-        __looking__stack = Stack(__file, -1, (-1, -1))
-        __stack.enter(__looking__stack)
+def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
     __IGNORE_IF = False
     __looking__stack = __stack.last
     for tree in master:
@@ -579,46 +613,42 @@ def _run_tree(master: List[LineTree], __globals: Dict[str, Any], __file: str, __
                 match tree.code.codeType:
                     case CodeType.EXEC_LOOP_CONTINUE: return void_loop_continue
                     case CodeType.EXEC_LOOP_BREAK: return void_loop_break
-                _eval(tree.code, __globals, __file, __stack)
+                _eval(tree.code, __file, __stack)
             elif tree.code.is_exec:
-                if tree.code.is_dataholder: original_keys = __globals.keys()
-
 
                 # Execute Eval_~~~ code
                 if tree.code.codeType == CodeType.EXEC_CONDITION_IF:
                     __IGNORE_IF = False
-                    if _eval(tree.code.kw["args"][0], __globals, __file, __stack):
+                    if _eval(tree.code.kw["args"][0], __file, __stack):
                         __IGNORE_IF = True
-                        _run_tree(tree.childs, __globals, __file, __stack)
+                        _run_tree(tree.childs, __file, __stack)
                 elif tree.code.codeType == CodeType.EXEC_CONDITION_ELIF:
-                    if (not __IGNORE_IF) and _eval(tree.code.kw["args"][0], __globals, __file, __stack):
+                    if (not __IGNORE_IF) and _eval(tree.code.kw["args"][0], __file, __stack):
                         __IGNORE_IF = True
-                        _run_tree(tree.childs, __globals, __file, __stack)
+                        _run_tree(tree.childs, __file, __stack)
                 elif tree.code.codeType == CodeType.EXEC_CONDITION_ELSE:
                     if (not __IGNORE_IF):
                         __IGNORE_IF = True
-                        _run_tree(tree.childs, __globals, __file, __stack)
+                        _run_tree(tree.childs, __file, __stack)
                 else: __IGNORE_IF = False
 
                 if tree.code.codeType == CodeType.EXEC_LOOP_WHILE:
-                    while _eval(tree.code.kw["args"][0], __globals, __file, __stack):
-                        _run_tree(tree.childs, __globals, __file, __stack)
+                    while _eval(tree.code.kw["args"][0], __file, __stack):
+                        _run_tree(tree.childs, __file, __stack)
                 elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
-                    __iter = _eval(tree.code.kw["args"][0], __globals, __file, __stack)
+                    __iter = _eval(tree.code.kw["args"][0], __file, __stack)
                     if type(__iter) == int: __iter = range(__iter)
                     __index: int = __looking__stack.loop.next_index
                     __looking__stack.loop.next_index += 1
                     for __item in __iter:
                         __looking__stack.loop.values[__index] = __item
-                        loop_control:Void = _run_tree(tree.childs, __globals, __file, __stack)
+                        loop_control:Void = _run_tree(tree.childs, __file, __stack)
                         if loop_control == void_loop_continue: continue
                         elif loop_control == void_loop_break: break
                     __looking__stack.loop.next_index -= 1
                     del __looking__stack.loop.values[__index]
                 elif tree.code.codeType == CodeType.EXEC_DEFINE_FUNCTION:
-                    __globals[tree.code.kw["name"]] = create_function(tree.code.kw["name"], tree.code.kw['tokens'], tree.childs)
-                
-                if tree.code.is_dataholder: __globals = {key: __globals[key] for key in original_keys}
+                    __stack.last.data[tree.code.kw["name"]] = Variable(create_function(tree.code.kw["name"], tree.code.kw['tokens'], tree.childs))
         except __EvalException as e: raise HandledException(e, deepcopy(__stack))
     return void
 
@@ -647,14 +677,14 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
         if type(__source) == str: __sourceTree = _treeMap(__source)
         else: __sourceTree = __source
 
-        if __globals == None: __globals = {}
-        putDefault(__globals)
-
-        _run_tree(__sourceTree, __globals, __file, __stack)
+        __stack = StackSet()
+        if __globals != None: __stack.last.data.update(__globals)
+        
+        _run_tree(__sourceTree, __file, __stack)
         return ExecuteResult(ExecuteResultType.Success)
     except HandledException as e:
         print("Traceback:")
-        for stack in e.stack.history:
+        for stack in e.stack.history[1:]:
             print("  "+"File \""+stack.loc+"\", line "+str(stack.line+1))
             print("  "+"  "+__source.split("\n")[stack.line].lstrip())
             print("  "+"  "+" "*(stack.col.start) + "^"*(stack.col.end-stack.col.start))

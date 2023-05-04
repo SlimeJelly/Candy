@@ -1,0 +1,6 @@
+set $sep to 1
+function work with ($n):
+    if (($n) > (0)):
+        println of ($n)
+        work with (($n) - ($sep))
+work with (5)

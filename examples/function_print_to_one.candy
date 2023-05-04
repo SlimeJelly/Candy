@@ -1,5 +1,0 @@
-function work with ($n):
-    if (($n) != (0)):
-        println of ($n)
-        work with (($n) - (1))
-work with (5)
