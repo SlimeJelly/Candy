@@ -1,3 +1,5 @@
 ignore/*
 build/*
 .mypy_cache/*
+.fleet/*
+.vscode/*

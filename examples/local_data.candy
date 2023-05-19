@@ -1,0 +1,9 @@
+set $global_value to "Hello, global!"
+
+function study_local with ($init):
+    set $local_value to $init
+    println of ($global_value)
+    println of ($local_value)
+
+study_local with ("Hello, local!")
+println of ($local_value)

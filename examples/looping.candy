@@ -1,0 +1,12 @@
+set $n to -1
+while (true):
+    set $n to ($n) + (1)
+    if (($n) == (0)):
+        continue
+    elif (($n) == (10)):
+        break
+    else:
+        print of ($n)
+    if ((($n) % (2)) == (0)):
+        print of ($n)
+    println of ("")
