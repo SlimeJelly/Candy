@@ -1,5 +1,6 @@
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Set, Tuple, Union, Iterator, Literal
+from types import NoneType
+from typing import Any, Callable, Dict, List, Set, Tuple, Type, Union, Iterator, Literal
 from dataclasses import dataclass, field
 from copy import deepcopy
 from sys import argv as __sys_argv
@@ -35,11 +36,15 @@ del __sys_argv
 
 __candy_location    : str                                   = __file__
 __candy_interpreter : Literal["PY", "EXE"]                  = __candy_location.split(".")[-1].upper()
-__candy_file        : Union[str, None]                      = sys_argv.filter (lambda loc: loc.endswith(".candy"))\
+__candy_file        : Union[str, NoneType]                      = sys_argv.filter (lambda loc: loc.endswith(".candy"))\
                                                                       .map    (lambda loc: loc.replace("\\", sep).replace("/", sep))\
                                                                       .collect(None, lambda target, loc: loc if target == None else target)
 __candy_mode        : Literal["RUN", "COMPILE", "TERMINAL"] = "TERMINAL" if __candy_file == None else "COMPILE" if "-compile" in sys_argv else "RUN"
-__candy_setting     : Dict[str, Any]                        = {"timer": "-timer" in sys_argv}
+__candy_setting     : Dict[str, Any]                        = {
+    "__debug_candy_interpreter": False, #FIXME: debug mode
+    "ignore_help": "-ignore-help" in sys_argv,
+    "timer": "-timer" in sys_argv
+}
 if __candy_setting["timer"]:
     from time import time as __time
 if type(__candy_file) == str and not exists(__candy_file): 
@@ -70,15 +75,47 @@ del regxp_compile
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
 
-@dataclass(frozen=True)
-class Void():
-    data: str
+class RelayData():
+    def __init__(self, data: str) -> None: self.data = data
+    @staticmethod
+    def isRelayData(target): return isinstance(target, RelayData)
 
-VOID = Void("VOID")
-MISSING_ARG = Void("MISSING_ARG")
-RELAY_SET_RETURN = Void("RELAY_SET_RETURN")
-RELAY_LOOP_BREAK = Void("RELAY_LOOP_BREAK")
-RELAY_LOOP_CONTINUE = Void("RELAY_LOOP_CONTINUE")
+    EMPTY: "RelayData" = None
+    MISSING_ARG: "RelayData" = None
+    NO_MASTER: "RelayData" = None
+    NO_RESULT: "RelayData" = None
+    LOOP_BREAK: "RelayData" = None
+    LOOP_CONTINUE: "RelayData" = None
+    
+    ReturnData: "ReturnData" = None
+
+class ReturnData(RelayData):
+    def __init__(self, data: Any) -> None:
+        super().__init__("Return")
+        self.data = data 
+    def __str__(self) -> str: return "ReturnData("+str(self.data)+")"
+    def __repr__(self) -> str: return "ReturnData("+self.data.__repr__()+")"
+
+RelayData.ReturnData = ReturnData
+del ReturnData
+
+RelayData.EMPTY = RelayData("EMPTY")   
+RelayData.MISSING_ARG = RelayData("MISSING_ARG")
+RelayData.NO_MASTER = RelayData("NO_MASTER")
+RelayData.NO_RESULT = RelayData("NO_RESULT")
+RelayData.LOOP_BREAK = RelayData("LOOP_BREAK")
+RelayData.LOOP_CONTINUE = RelayData("LOOP_CONTINUE")
+
+
+# @dataclass(frozen=True)
+# class Void():
+#     data: str
+
+# VOID = Void("VOID")
+# MISSING_ARG = Void("MISSING_ARG")
+# RELAY_SET_RETURN = Void("RELAY_SET_RETURN")
+# RELAY_LOOP_BREAK = Void("RELAY_LOOP_BREAK")
+# RELAY_LOOP_CONTINUE = Void("RELAY_LOOP_CONTINUE")
 
 class StackType(Enum):
     ROOT = 0
@@ -105,7 +142,7 @@ class Stack():
     line: int
     type: StackType
     col: ColRange
-    master: Union["Stack", None] = None
+    master: Union["Stack", NoneType] = None
     loop: LoopData = field(default_factory=LoopData)
     data: Dict[str, Variable] = field(default_factory=dict)
     def getData(self, name: str):
@@ -139,21 +176,21 @@ class StackSet():
 @dataclass(frozen=True)
 class Argument():
     name:str
-    auto:Any=MISSING_ARG
+    auto:Any=RelayData.MISSING_ARG
 
 class Function():
     def __init__(self, name: str, tokens: List[Union[str, Argument]], func: Callable):
         self.name: str = name
         self.tokens: Set[str] = set([token for token in tokens if type(token) == str])
         self.__args: List[Argument] = [token for token in tokens if type(token) == Argument]
-        self.less_args = len([arg for arg in self.__args if arg.auto is MISSING_ARG])
+        self.less_args = len([arg for arg in self.__args if arg.auto is RelayData.MISSING_ARG])
         self.func = func
     def __call__(self, variables: List[Any], _file: str, _stack: "StackSet") -> Any:
         if len(self.__args) != len(variables): pass # error
         if len(variables) < self.less_args: raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
-        variables += (MISSING_ARG,) * (len(self.__args) - len(variables))
-        localDict: Dict[str, Any] = {arg_slot.name:Variable(var if type(var) != Void else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
-        if MISSING_ARG in localDict.values(): raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
+        variables += (RelayData.MISSING_ARG,) * (len(self.__args) - len(variables))
+        localDict: Dict[str, Any] = {arg_slot.name:Variable(var if not RelayData.isRelayData(var) else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
+        if RelayData.MISSING_ARG in localDict.values(): raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
         innerStack = (lambda lastStack: Stack(_file, lastStack.line, type=StackType.FUNCTION, col=lastStack.col, master=lastStack, data=localDict))(_stack.last)
         _stack.enter(innerStack)
         v = self.func(localDict, _file, _stack)
@@ -163,7 +200,7 @@ class Function():
 def create_py_function(func_name:str, tokens: List[Union[str, Argument]], func: Callable, auto_return: bool = True):
     def __func (arguments, _, __): 
         __relay = func(**{k:v.value for k, v in arguments.items()})
-        if auto_return and __relay is None: return VOID
+        if auto_return and __relay is None: return RelayData.NO_RESULT
         return __relay
     return Function(func_name, tokens, __func)
 
@@ -177,6 +214,7 @@ class Forever(Iterator):
     def __next__(self) -> int: self.index += 1; return self.index
 _dict["print"]    = create_py_function("print",    ["of", Argument("text")], __print)
 _dict["println"]  = create_py_function("println",  ["of", Argument("text")], __println)
+_dict["input"]    = create_py_function("input",    [], input)
 _dict["combine"]  = create_py_function("combine",  ["of", Argument("t1"), "and", Argument("t2")], __combine)
 _dict["repeat"]   = create_py_function("repeat",   ["of", Argument("text"), "for", Argument("count"), "times"], __repeat)
 _dict["range"]    = create_py_function("range",    ["of", Argument("start"), "to", Argument("end"), "by", Argument("sep", auto=1)], lambda start, end, sep: range(start, end, sep))
@@ -246,7 +284,7 @@ class Code():
     def __str__(self) -> str: return f"Code::{self.codeType} (at {self.col}) [{self.kw}]"
 
 class LineTree():
-    def __init__(self, line: int, code: Code, master: Union[Void, "LineTree"] = VOID):
+    def __init__(self, line: int, code: Code, master: Union[RelayData, "LineTree"] = RelayData.NO_MASTER):
         self.line = line
         self.code = code
         self.master = master
@@ -421,10 +459,10 @@ def checkSyntax(__source: str) -> Tuple[SyntaxResultType, Tuple[int, ...]]:
     
     last_ident = 0
     lines = __source.split("\n")
-    first_identify: Union[str, Void] = VOID
+    first_identify: Union[str, NoneType] = None
     for l, line in enumerate(lines):
         if line == "": continue
-        elif not (line[0] in (" ", "\t")): first_identify, last_ident = VOID, 0
+        elif not (line[0] in (" ", "\t")): first_identify, last_ident = None, 0
         else:
             looking_identify:str = ""
             code: str = ""
@@ -471,7 +509,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
 
             value = _compile(match_define.group(2), ColRange(col.start+4+len(argName)+4, col.end))
             if COMPILED_EXPRESSION_VARIABLE.fullmatch(argName) == None: return SyntaxError()
-            if type(value) == Void: return SyntaxError()
+            if RelayData.isRelayData(value): return SyntaxError()
 
             return Code(CodeType.EVAL_SET, deepcopy(col), var=argName[1:], value=value)
         elif expression.startswith("$"):
@@ -537,7 +575,7 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
     __looking__stack = __stack.last
     __looking__stack.col = __code.col
     try:
-        if __code.codeType == CodeType.EMPTY: return VOID
+        if __code.codeType == CodeType.EMPTY: return RelayData.NO_RESULT
         if __code.codeType == CodeType.PARENTHESIS: return _eval(__code.kw["code"], __file, __stack)
         if __code.codeType == CodeType.EVAL_INTEGER: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_DECIMAL: return __code.kw["value"]
@@ -549,14 +587,14 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
             target: Function = __stack.last.getData(__code.kw["target"])
             arguments = tuple([_eval(arg, __file, __stack) for arg in __code.kw["args"] if isinstance(arg, Code)])
             for value in arguments:
-                if value is RELAY_SET_RETURN: raise SyntaxError("Function arguments must not be SET expression")
+                if value is RelayData.NO_RESULT: raise SyntaxError("Function arguments must not be SET expression")
             result = target(arguments, __file, __stack)
             return result
         if __code.codeType == CodeType.EVAL_SET:
             value = _eval(__code.kw["value"], __file, __stack)
-            if value is RELAY_SET_RETURN: raise SyntaxError("SET expression must not be SET expression")
+            if value is RelayData.NO_RESULT: raise SyntaxError("The expression of value is non-result.")
             __stack.last.data[__code.kw["var"]] = Variable(value)
-            return RELAY_SET_RETURN
+            return RelayData.NO_RESULT
         if __code.codeType == CodeType.EVAL_CALC:
             return eval(__code.kw["evalCode"], {"__args": [_eval(arg, __file, __stack) for arg in __code.kw["args"]]})
         if __code.codeType == CodeType.EVAL_LOOP_VALUE:
@@ -574,12 +612,12 @@ def _treeMap(__source: str) -> List[LineTree]:
     master: List[LineTree] = []
     last_ident = 0
     lines = __source.split("\n")
-    first_identify: Union[str, Void] = VOID
+    first_identify: Union[str, NoneType] = None
     for i, line in enumerate(lines):
         if line == "": continue
         elif not (line[0] in (" ", "\t")):
             master.append(LineTree(i, _compile(line)))
-            first_identify = VOID
+            first_identify = None
             last_ident = 0
         else:
             looking_identify:str = ""
@@ -600,7 +638,7 @@ def _treeMap(__source: str) -> List[LineTree]:
 def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
     __IGNORE_IF = False
     __looking__stack = __stack.last
-    __result = VOID
+    __result = RelayData.EMPTY
     for tree in master:
         __stack.last.line = tree.line
         __stack.last.col = tree.code.col
@@ -609,10 +647,10 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                 __result = _eval(tree.code, __file, __stack)
             elif tree.code.is_exec:
                 match tree.code.codeType:
-                    case CodeType.EXEC_LOOP_CONTINUE: return RELAY_LOOP_CONTINUE
-                    case CodeType.EXEC_LOOP_BREAK:    return RELAY_LOOP_BREAK
+                    case CodeType.EXEC_LOOP_CONTINUE: return RelayData.LOOP_CONTINUE
+                    case CodeType.EXEC_LOOP_BREAK:    return RelayData.LOOP_BREAK
 
-                __relay = VOID
+                __relay = RelayData.EMPTY
                 if tree.code.codeType == CodeType.EXEC_CONDITION_IF:
                     __IGNORE_IF = False
                     if _eval(tree.code.kw["args"][0], __file, __stack):
@@ -627,14 +665,14 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                         __IGNORE_IF = True
                         __relay = _run_tree(tree.childs, __file, __stack)
                 else: __IGNORE_IF = False
-                if __relay is RELAY_LOOP_CONTINUE or __relay is RELAY_LOOP_BREAK: return __relay
+                if __relay is RelayData.LOOP_CONTINUE or __relay is RelayData.LOOP_BREAK: return __relay
                 del __relay
 
                 if tree.code.codeType == CodeType.EXEC_LOOP_WHILE:
                     while _eval(tree.code.kw["args"][0], __file, __stack):
                         while_control = _run_tree(tree.childs, __file, __stack)
-                        if while_control is RELAY_LOOP_CONTINUE: continue
-                        elif while_control is RELAY_LOOP_BREAK: break
+                        if while_control is RelayData.LOOP_CONTINUE: continue
+                        elif while_control is RelayData.LOOP_BREAK: break
                 elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
                     __iter = _eval(tree.code.kw["args"][0], __file, __stack)
                     if type(__iter) == int: __iter = range(__iter)
@@ -642,9 +680,9 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                     __looking__stack.loop.next_index += 1
                     for __item in __iter:
                         __looking__stack.loop.values[__index] = __item
-                        loop_control:Void = _run_tree(tree.childs, __file, __stack)
-                        if loop_control is RELAY_LOOP_CONTINUE: continue
-                        elif loop_control is RELAY_LOOP_BREAK: break
+                        loop_control: RelayData = _run_tree(tree.childs, __file, __stack)
+                        if loop_control is RelayData.LOOP_CONTINUE: continue
+                        elif loop_control is RelayData.LOOP_BREAK: break
                     __looking__stack.loop.next_index -= 1
                     del __looking__stack.loop.values[__index]
                 elif tree.code.codeType == CodeType.EXEC_FUNCTION_DEFINE:
@@ -669,8 +707,8 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
         __Tsource = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
         __syntax, __err_lines = checkSyntax(__Tsource)
         if __syntax != SyntaxResultType.Right:
-            note("Found wrong syntax while parsing script: \""+__file+"\"")
-            for __err_line in __err_lines: note("[%s] at line %d `%s`"%(__syntax.name, __err_line, __Tsource.split("\n")[__err_line]))
+            print("Found wrong syntax while parsing script: \""+__file+"\"")
+            for __err_line in __err_lines: print("[%s] at line %d `%s`"%(__syntax.name, __err_line, __Tsource.split("\n")[__err_line]))
             return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
     
     try:
@@ -681,11 +719,14 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
         __result = _run_tree(__sourceTree, __file, __stack)
         
         return ExecuteResult(ExecuteResultType.Success, __result)
+
     except HandledException as e:
         if e.exception.__class__ == SystemExit: return ExecuteResult(ExecuteResultType.Success)
         
+        if __candy_setting["__debug_candy_interpreter"]: raise e.exception
+        
         def note(*values, sep=" ", end=""):
-            e.add_note(sep.join(map(str, values))+end)
+            e.add_note(sep.join(map(str, values)) + end)
         
         note("Traceback:")
         for stack in e.stack.history:
@@ -694,12 +735,13 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
             note("  "+"  "+" "*(stack.col.start) + "^"*(stack.col.end-stack.col.start))
         note(e.exception.__class__.__name__ +": "+ str(e.exception))
         
+        if __candy_setting["ignore_help"]: raise
+        
         #notes
         if type(e.exception) == NameError:
             from thefuzz.process import extract as extract_similar
             note("[Help] Did you mean '"+extract_similar(e.exception.args[0].split("'")[1], e.stack.getKeys())[0][0]+"'?")
                 
-
         raise
 
 if __candy_mode == "RUN":
@@ -718,7 +760,7 @@ elif __candy_mode == "TERMINAL":
     __global = {}
     def __console_input(__prompt: str)->str:
         try: return input(__prompt)
-        except KeyboardInterrupt as ki: print(); raise
+        except KeyboardInterrupt as ki: print("^C"); raise
         except: raise
     while True:
         try:
@@ -730,7 +772,7 @@ elif __candy_mode == "TERMINAL":
             if __candy_setting["timer"]:
                 time_start = __time()
             __result = _exec("\n".join(__source), __global)
-            if __result.result == ExecuteResultType.Success and not (type(__result.args[0]) is Void): print(__result.args[0])
+            if __result.result == ExecuteResultType.Success and not (RelayData.isRelayData(__result.args[0])): print(__result.args[0])
             if __candy_setting["timer"]:
                 print("Time elapsed: %.6f sec"%(__time()-time_start))
         except HandledException as he: print("\n".join(he.__notes__))

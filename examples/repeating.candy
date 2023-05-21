@@ -1,0 +1,2 @@
+set $text to input
+println of ($text)

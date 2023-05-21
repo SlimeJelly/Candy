@@ -1,4 +1,4 @@
-Update of Candy Alpha 10.1.1
+Update of Candy Alpha 10.1.2
 ===
 
- - Fixed traceback listing error
+ - Changed relay system
