@@ -1,7 +1,7 @@
 function square of ($base) by ($exponent):
     if ((($base) == (0)) and (($exponent) == (0))):
         println of ("Don't do 0**0")
-        return (0) # return is not prepared yet
+        return 0
     else:
-        return (($base) ** ($exponent))
+        return ($base) ** ($exponent)
 println of (square of (2) by (3))

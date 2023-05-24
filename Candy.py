@@ -69,6 +69,7 @@ COMPILED_EXPRESSION_WORD         = regxp_compile("\\w+")
 COMPILED_EXPRESSION_BLOCKHOLDER  = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
 COMPILED_EXPRESSION_LOOP_VALUE   = regxp_compile("loop-value-\\d+")
 COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
+COMPILED_EXPRESSION_RETURN       = regxp_compile("return [^\n]*")
 del EXPRESSION_SPACE, EXPRESSION_NAME, EXPRESSION_VARIABLE, EXPRESSION_INTEGER, EXPRESSION_DECIMAL
 del regxp_compile
 
@@ -76,22 +77,23 @@ OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**",
                    "==", "!=", "<", ">", "<=", ">=",)
 
 class RelayData():
-    def __init__(self, data: str) -> None: self.data = data
+    def __init__(self, name: str) -> None:
+        self.name = name
     @staticmethod
     def isRelayData(target): return isinstance(target, RelayData)
 
-    EMPTY: "RelayData" = None
+    EMPTY: "RelayData"
     MISSING_ARG: "RelayData" = None
     NO_MASTER: "RelayData" = None
     NO_RESULT: "RelayData" = None
     LOOP_BREAK: "RelayData" = None
     LOOP_CONTINUE: "RelayData" = None
     
-    ReturnData: "ReturnData" = None
+    ReturnData: Type["ReturnData"] = None
 
 class ReturnData(RelayData):
     def __init__(self, data: Any) -> None:
-        super().__init__("Return")
+        super().__init__("RETURN")
         self.data = data 
     def __str__(self) -> str: return "ReturnData("+str(self.data)+")"
     def __repr__(self) -> str: return "ReturnData("+self.data.__repr__()+")"
@@ -297,6 +299,7 @@ class LineTree():
 def create_function(name: str, parameters: List[Union[str, Argument]], code: List[LineTree]) -> Function:
     def __func(arguments: Dict[str, Any], __file: str, __stack: StackSet):
         __relay = _run_tree(code, __file, __stack)
+        if RelayData.isRelayData(__relay) and __relay.name == "RETURN": return __relay.data
         return __relay
     return Function(name, parameters, __func)
 
@@ -410,6 +413,8 @@ def checkExpressionSyntax(__source: str) -> bool:
     if len(splits) == 5 and splits[1][1] == "to" and splits[3][1] == "by" and checkExpressionSyntax(splits[0][1]) and checkExpressionSyntax(splits[2][1]) and checkExpressionSyntax(splits[4][1]): return True
 
     # Exec
+    if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
+        or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
     if (COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source) != None):
         match_blockholder = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source)
         codeTypeString = match_blockholder.group(1)
@@ -427,8 +432,9 @@ def checkExpressionSyntax(__source: str) -> bool:
             return len(sa) >= 1 and (not sa[0][0]) and not (False in [(
                 COMPILED_EXPRESSION_VARIABLE.fullmatch(token[1:-1]) != None if _type else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
             ) for _type, token in sa[1:]])
-    if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
-        or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
+    if COMPILED_EXPRESSION_RETURN.fullmatch(__source) != None:
+        return_value = __source[6:].lstrip()
+        return checkExpressionSyntax(return_value)
         
     if COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source) != None:
         match_function = COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source)
@@ -500,7 +506,6 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             if not CodeType.EVAL_EXECUTE in map(lambda v: v.codeType, (value_start, value_end, value_sep)):
                 return Code(CodeType.EVAL_RANGE, deepcopy(col), start=value_start, end=value_end, sep=value_sep)
 
-
         if expression.startswith("set"):
             match_define = COMPILED_EXPRESSION_SET.fullmatch(expression)
             if match_define == None: return SyntaxError()
@@ -514,6 +519,8 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             return Code(CodeType.EVAL_SET, deepcopy(col), var=argName[1:], value=value)
         elif expression.startswith("$"):
             return Code(CodeType.EVAL_VARIABLE, deepcopy(col), value=expression[1:])
+        elif COMPILED_EXPRESSION_RETURN.fullmatch(expression) != None:
+            return Code(CodeType.EXEC_FUNCTION_RETURN, deepcopy(col), value=_compile(expression[6:].lstrip(), ColRange(col.start+7, col.end)))
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
             codeTypeString:str = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
@@ -647,8 +654,10 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                 __result = _eval(tree.code, __file, __stack)
             elif tree.code.is_exec:
                 match tree.code.codeType:
-                    case CodeType.EXEC_LOOP_CONTINUE: return RelayData.LOOP_CONTINUE
-                    case CodeType.EXEC_LOOP_BREAK:    return RelayData.LOOP_BREAK
+                    case CodeType.EXEC_LOOP_CONTINUE:   return RelayData.LOOP_CONTINUE
+                    case CodeType.EXEC_LOOP_BREAK:      return RelayData.LOOP_BREAK
+                    case CodeType.EXEC_FUNCTION_RETURN: 
+                        return RelayData.ReturnData(_eval(tree.code.kw["value"], __file, __stack))
 
                 __relay = RelayData.EMPTY
                 if tree.code.codeType == CodeType.EXEC_CONDITION_IF:
@@ -666,6 +675,7 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                         __relay = _run_tree(tree.childs, __file, __stack)
                 else: __IGNORE_IF = False
                 if __relay is RelayData.LOOP_CONTINUE or __relay is RelayData.LOOP_BREAK: return __relay
+                if RelayData.isRelayData(__relay) and __relay.name == "RETURN": return __relay
                 del __relay
 
                 if tree.code.codeType == CodeType.EXEC_LOOP_WHILE:
@@ -673,6 +683,7 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                         while_control = _run_tree(tree.childs, __file, __stack)
                         if while_control is RelayData.LOOP_CONTINUE: continue
                         elif while_control is RelayData.LOOP_BREAK: break
+                        elif RelayData.isRelayData(while_control) and while_control.name == "RETURN": return while_control
                 elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
                     __iter = _eval(tree.code.kw["args"][0], __file, __stack)
                     if type(__iter) == int: __iter = range(__iter)
@@ -683,6 +694,7 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
                         loop_control: RelayData = _run_tree(tree.childs, __file, __stack)
                         if loop_control is RelayData.LOOP_CONTINUE: continue
                         elif loop_control is RelayData.LOOP_BREAK: break
+                        elif RelayData.isRelayData(loop_control) and loop_control.name == "RETURN": return loop_control
                     __looking__stack.loop.next_index -= 1
                     del __looking__stack.loop.values[__index]
                 elif tree.code.codeType == CodeType.EXEC_FUNCTION_DEFINE:
