@@ -1,15 +1,15 @@
-set $line to ("*") * (47) #문자열 ""을 47번 반복하여 $line 변수에 할당
-set $title to ($line) + (" [Multiplication Table] ") + ($line) #$line 변수를 이용해 제목 문자열을 만들고, $title 변수에 할당
-println of ($title) #$title 변수의 값을 출력
+set line to ("*") * (47) #문자열 ""을 47번 반복하여 line 변수에 할당
+set title to (line) + (" [Multiplication Table] ") + (line) #line 변수를 이용해 제목 문자열을 만들고, title 변수에 할당
+println of (title) #title 변수의 값을 출력
 loop ((2) to (10) by (1)): #2부터 10까지 1씩 증가하며 반복
     loop ((1) to (10) by (1)): #1부터 10까지 1씩 증가하며 반복
         if ((loop-value-1) == (1)): #가로줄 표시를 위한 조건문
             print of ("| ") #"| " 출력
-        set $result to (loop-value-0) * (loop-value-1) #현재 반복값들을 곱하여 $result 변수에 할당
-        set $text to (asString of (loop-value-0)) + (" x ") + (asString of (loop-value-1)) + (" = ") + (asString of ($result)) #현재 반복값들과 $result 변수를 이용하여 문장열 생성 후 $text 변수에 할당
-        if (($result) < (10)): #$result가 한자리 수 일 경우, 문장열 뒤에 공백 추가
-            set $text to ($text) + (" ")
-        print of ($text) #$text 변수의 값을 출력
+        set result to (loop-value-0) * (loop-value-1) #현재 반복값들을 곱하여 result 변수에 할당
+        set text to (asString of (loop-value-0)) + (" x ") + (asString of (loop-value-1)) + (" = ") + (asString of (result)) #현재 반복값들과 result 변수를 이용하여 문장열 생성 후 text 변수에 할당
+        if ((result) < (10)): #result가 한자리 수 일 경우, 문장열 뒤에 공백 추가
+            set text to (text) + (" ")
+        print of (text) #text 변수의 값을 출력
         print of (" | ") #"|" 출력
     println of ("") #가로줄이 끝난 후, 줄바꿈을 통해 다음 줄로 이동
-println of (("*") * (length of ($title))) #전체 출력이 끝나면 가로줄 출력
+println of (("*") * (length of (title))) #전체 출력이 끝나면 가로줄 출력

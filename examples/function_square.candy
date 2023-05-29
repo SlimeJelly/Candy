@@ -1,5 +1,5 @@
-function square of ($base) by ($exponent):
-    if ((($base) == (0)) and (($exponent) == (0))):
+function square of (base) by (exponent):
+    if (((base) == (0)) and ((exponent) == (0))):
         println of ("Don't do 0**0")
         return 0
     else:

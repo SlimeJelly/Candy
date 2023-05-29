@@ -54,22 +54,25 @@ del exists, sep
 
 EXPRESSION_SPACE = "[ |\t]+"
 EXPRESSION_NAME = "[a-z|A-Z|_][\w|\d|_]*"
-EXPRESSION_VARIABLE = "\$" + EXPRESSION_NAME
+EXPRESSION_VARIABLE = "("+EXPRESSION_NAME+")[ |\t]*([^\n]*)"
 EXPRESSION_INTEGER = "-?[1-9][0-9]*|-?0"
 EXPRESSION_DECIMAL = "-?[0-9]*?.[0-9]+"
-COMPILED_EXPRESSION_EMPTY        = regxp_compile("[ |\t]+")
-COMPILED_EXPRESSION_VARIABLE     = regxp_compile(EXPRESSION_VARIABLE)
-COMPILED_EXPRESSION_STRING       = regxp_compile("\"[^\"\n]*\"")
-COMPILED_EXPRESSION_INTEGER      = regxp_compile(EXPRESSION_INTEGER)
-COMPILED_EXPRESSION_DECIMAL      = regxp_compile(EXPRESSION_DECIMAL)
-COMPILED_EXPRESSION_BOOLEAN      = regxp_compile("(true|false)")
-COMPILED_EXPRESSION_SET          = regxp_compile("set"+EXPRESSION_SPACE+"("+EXPRESSION_VARIABLE+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
-COMPILED_EXPRESSION_CALL_FUNC    = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
-COMPILED_EXPRESSION_WORD         = regxp_compile("\\w+")
-COMPILED_EXPRESSION_BLOCKHOLDER  = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
-COMPILED_EXPRESSION_LOOP_VALUE   = regxp_compile("loop-value-\\d+")
-COMPILED_EXPRESSION_LOOP_CONTROL = regxp_compile("(break|continue)")
-COMPILED_EXPRESSION_RETURN       = regxp_compile("return [^\n]*")
+COMPILED_EXPRESSION_EMPTY                = regxp_compile("[ |\t]+")
+COMPILED_EXPRESSION_NAME                 = regxp_compile(EXPRESSION_NAME)
+COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
+COMPILED_EXPRESSION_VARIABLE_FORCE       = regxp_compile("\$" + EXPRESSION_NAME)
+COMPILED_EXPRESSION_VARIABLE             = regxp_compile("\$?(" + EXPRESSION_NAME + ")")
+COMPILED_EXPRESSION_STRING               = regxp_compile("\"[^\"\n]*\"")
+COMPILED_EXPRESSION_INTEGER              = regxp_compile(EXPRESSION_INTEGER)
+COMPILED_EXPRESSION_DECIMAL              = regxp_compile(EXPRESSION_DECIMAL)
+COMPILED_EXPRESSION_BOOLEAN              = regxp_compile("(true|false)")
+COMPILED_EXPRESSION_SET                  = regxp_compile("set"+EXPRESSION_SPACE+"(\$?"+EXPRESSION_NAME+")"+EXPRESSION_SPACE+"to"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_WORD                 = regxp_compile("\\w+")
+COMPILED_EXPRESSION_BLOCKHOLDER          = regxp_compile("(if|elif|else|for|while|loop|function)"+"([^\n]*):")
+COMPILED_EXPRESSION_LOOP_VALUE           = regxp_compile("loop-value-\\d+")
+COMPILED_EXPRESSION_LOOP_CONTROL         = regxp_compile("(break|continue)")
+COMPILED_EXPRESSION_RETURN               = regxp_compile("return [^\n]*")
+COMPILED_EXPRESSION_VARIABLE_CONTROL     = regxp_compile("(forget|share)"+EXPRESSION_SPACE+"([^\n]+)")
 del EXPRESSION_SPACE, EXPRESSION_NAME, EXPRESSION_VARIABLE, EXPRESSION_INTEGER, EXPRESSION_DECIMAL
 del regxp_compile
 
@@ -147,9 +150,13 @@ class Stack():
     master: Union["Stack", NoneType] = None
     loop: LoopData = field(default_factory=LoopData)
     data: Dict[str, Variable] = field(default_factory=dict)
-    def getData(self, name: str):
+    def get(self, name: str):
         if name in self.data: return self.data[name].value
-        elif self.master != None: return self.master.getData(name)
+        elif self.master != None: return self.master.get(name)
+        else: raise NameError("name '"+name+"' is not defined")
+    def forget(self, name: str):
+        if name in self.data: del self.data[name]
+        elif self.master != None: self.master.forget(name)
         else: raise NameError("name '"+name+"' is not defined")
 
 class StackSet():
@@ -169,6 +176,14 @@ class StackSet():
     def last(self) -> Stack: return self.stacks[-1]
     @property
     def history(self) -> Tuple[Stack, ...]: return tuple(self.stacks)
+    @property
+    def file_stack(self) -> Tuple[Stack, ...]:
+        result = []
+        for stack in self.stacks:
+            if stack.type == StackType.ROOT: result.append(stack)
+            if stack.loc == result[-1].loc:
+                result[-1] = stack
+        return tuple(result)
     def getKeys(self)->List[str]:
         return list(reduce(lambda a, b: a.union(b), [set(stack.data.keys()) for stack in self.stacks]))
 
@@ -244,14 +259,17 @@ class CodeType(Enum):
     EVAL_STRING = 102
     EVAL_BOOLEAN = 103
     EVAL_VARIABLE = 104
-    EVAL_RANGE = 105
+    EVAL_VARIABLE_FORCE = 105
+    EVAL_RANGE = 106
 
     EVAL_LOOP_VALUE = 110
 
     #Eval - Work (120~)
-    EVAL_EXECUTE = 120
-    EVAL_SET = 121
-    EVAL_CALC = 122
+    EVAL_SET = 120
+    EVAL_CALC = 121
+    
+    EVAL_VARIABLE_FORGET = 130
+    EVAL_VARIABLE_SHARE = 131
 
     #Exec (200~)
     #Exec - Condition (200~)
@@ -400,19 +418,26 @@ def checkExpressionSyntax(__source: str) -> bool:
     
     
 
-    # Eval
     elif __source.startswith("set"):
         match_define = COMPILED_EXPRESSION_SET.fullmatch(__source)
-        return match_define != None and COMPILED_EXPRESSION_VARIABLE.fullmatch(match_define.group(1)) != None and checkExpressionSyntax(match_define.group(2))
+        return match_define != None \
+                and (COMPILED_EXPRESSION_NAME.fullmatch(match_define.group(1)) != None
+                     or COMPILED_EXPRESSION_VARIABLE_FORCE.fullmatch(match_define.group(1)) != None) \
+                and checkExpressionSyntax(match_define.group(2))
     elif COMPILED_EXPRESSION_STRING.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_DECIMAL.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_INTEGER.fullmatch(__source) != None \
-        or COMPILED_EXPRESSION_VARIABLE.fullmatch(__source) != None: return True
+        or COMPILED_EXPRESSION_VARIABLE_FORCE.fullmatch(__source) != None: return True
     
     splits = splitArguments(__source)
     if len(splits) == 5 and splits[1][1] == "to" and splits[3][1] == "by" and checkExpressionSyntax(splits[0][1]) and checkExpressionSyntax(splits[2][1]) and checkExpressionSyntax(splits[4][1]): return True
-
-    # Exec
+    
+    if COMPILED_EXPRESSION_VARIABLE_CONTROL.fullmatch(__source) != None:
+        match_variable_control = COMPILED_EXPRESSION_VARIABLE_CONTROL.fullmatch(__source)
+        return not (False in Array(match_variable_control.group(2).split(","))\
+                                    .filter(lambda v: len(v.strip()) != 0)\
+                                    .map(lambda v: v.lstrip().rstrip())\
+                                    .map(lambda v: COMPILED_EXPRESSION_VARIABLE.fullmatch(v) != None))
     if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
     if (COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source) != None):
@@ -436,8 +461,8 @@ def checkExpressionSyntax(__source: str) -> bool:
         return_value = __source[6:].lstrip()
         return checkExpressionSyntax(return_value)
         
-    if COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source) != None:
-        match_function = COMPILED_EXPRESSION_CALL_FUNC.fullmatch(__source)
+    if COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(__source) != None:
+        match_function = COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(__source)
         return COMPILED_EXPRESSION_WORD.fullmatch(match_function.group(1)) != None \
          and not (False in [(
             checkExpressionSyntax(token[1:-1]) if token.startswith("(") and token.endswith(")") else COMPILED_EXPRESSION_WORD.fullmatch(token) != None
@@ -503,7 +528,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             value_start = _compile(__splits[0][1], ColRange(s, s+len(__splits[0][1])-1))
             value_end = _compile(__splits[2][1], ColRange(s+len(__splits[0][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1))
             value_sep = _compile(__splits[4][1], ColRange(s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4, s+len(__splits[0][1])-1+4+len(__splits[2][1])-1+4+len(__splits[4][1])-1))
-            if not CodeType.EVAL_EXECUTE in map(lambda v: v.codeType, (value_start, value_end, value_sep)):
+            if set(map(lambda v: v.codeType, (value_start, value_end, value_sep))) <= {CodeType.EVAL_INTEGER, CodeType.EVAL_DECIMAL, CodeType.PARENTHESIS}:
                 return Code(CodeType.EVAL_RANGE, deepcopy(col), start=value_start, end=value_end, sep=value_sep)
 
         if expression.startswith("set"):
@@ -511,14 +536,27 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             if match_define == None: return SyntaxError()
 
             argName = match_define.group(1)
+            if len(argName) == 0: return SyntaxError()
+            __is_force_variable = argName[0] == '$'
 
             value = _compile(match_define.group(2), ColRange(col.start+4+len(argName)+4, col.end))
-            if COMPILED_EXPRESSION_VARIABLE.fullmatch(argName) == None: return SyntaxError()
             if RelayData.isRelayData(value): return SyntaxError()
 
-            return Code(CodeType.EVAL_SET, deepcopy(col), var=argName[1:], value=value)
+            if __is_force_variable: argName = argName[1:]
+            return Code(CodeType.EVAL_SET, deepcopy(col), var=argName, value=value)
+        elif COMPILED_EXPRESSION_VARIABLE_CONTROL.fullmatch(expression) != None:
+            match_variable_control = COMPILED_EXPRESSION_VARIABLE_CONTROL.fullmatch(expression)
+            return Code({
+                            "forget": CodeType.EVAL_VARIABLE_FORGET, 
+                            "share" : CodeType.EVAL_VARIABLE_SHARE
+                        }[match_variable_control.group(1)], 
+                        deepcopy(col), 
+                        targets= tuple(Array(match_variable_control.group(2).split(","))
+                                    .filter(lambda v: len(v.strip()) != 0)
+                                    .map(lambda v: v.lstrip().rstrip().replace("$", "")))
+                        )
         elif expression.startswith("$"):
-            return Code(CodeType.EVAL_VARIABLE, deepcopy(col), value=expression[1:])
+            return Code(CodeType.EVAL_VARIABLE_FORCE, deepcopy(col), value=expression[1:])
         elif COMPILED_EXPRESSION_RETURN.fullmatch(expression) != None:
             return Code(CodeType.EXEC_FUNCTION_RETURN, deepcopy(col), value=_compile(expression[6:].lstrip(), ColRange(col.start+7, col.end)))
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
@@ -526,8 +564,11 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
             if codeTypeString == "function":
                 return Code(CodeType.EXEC_FUNCTION_DEFINE, deepcopy(col), name=split_result[0][1], 
-                            tokens=tuple(Array(split_result)[1:].map(lambda v: (ItSelf if not v[0] else lambda k: Argument(k[2:-1]))(v[1])))
-                            )
+                            tokens=tuple(
+                                Array(split_result)[1:]\
+                                    .map(lambda v: 
+                                        (ItSelf if not v[0] else lambda k: Argument((lambda k: k[1:] if k.startswith("$") else k)(k[1:-1])))(v[1]))
+                            ))
             codeType = {
                 "if"      : CodeType.EXEC_CONDITION_IF,
                 "elif"    : CodeType.EXEC_CONDITION_ELIF,
@@ -548,10 +589,12 @@ def _compile(expression: str, col: ColRange = None) -> Code:
 
 
         # 
-        elif COMPILED_EXPRESSION_CALL_FUNC.fullmatch(expression) != None:
-            match_function = COMPILED_EXPRESSION_CALL_FUNC.fullmatch(expression)
+        elif COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(expression) != None:
+            match_function = COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(expression)
             if match_function == None: return SyntaxError()
+            
             split_result = splitArguments(match_function.group(2))
+            
             parse_result: List[Union[str, Code]] = []
             __col_st = col.start + len(match_function.group(1)) + 1
             for sps in split_result: # split string
@@ -560,7 +603,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
                     parse_result.append(_compile(item[1:-1], ColRange(__col_st+1, __col_st+len(item)-1)))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
-            return Code(CodeType.EVAL_EXECUTE, deepcopy(col), target=match_function.group(1), args=tuple(parse_result))
+            return Code(CodeType.EVAL_VARIABLE, deepcopy(col), target=match_function.group(1), args=tuple(parse_result))
         else:
             __col_st = col.start
             i = 0
@@ -588,10 +631,11 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
         if __code.codeType == CodeType.EVAL_DECIMAL: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_STRING:  return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_BOOLEAN: return __code.kw["value"]
+        if __code.codeType == CodeType.EVAL_VARIABLE_FORCE:
+            return __stack.last.get(__code.kw["value"])
         if __code.codeType == CodeType.EVAL_VARIABLE:
-            return __stack.last.getData(__code.kw["value"])
-        if __code.codeType == CodeType.EVAL_EXECUTE:
-            target: Function = __stack.last.getData(__code.kw["target"])
+            target = __stack.last.get(__code.kw["target"])
+            if type(target) != Function: return target
             arguments = tuple([_eval(arg, __file, __stack) for arg in __code.kw["args"] if isinstance(arg, Code)])
             for value in arguments:
                 if value is RelayData.NO_RESULT: raise SyntaxError("Function arguments must not be SET expression")
@@ -609,6 +653,17 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
                 raise SyntaxError("Loop value of index '"+str(__code.kw["index"])+"' is overloading. (" + ("no loop detected" if __looking__stack.loop.values == {} else "max loop index: "+str(max(__looking__stack.loop.values.keys()))) + ")")
             return __looking__stack.loop.values[__code.kw["index"]]
         if __code.codeType == CodeType.EVAL_RANGE: return range(_eval(__code.kw["start"], __file, __stack), _eval(__code.kw["end"], __file, __stack), _eval(__code.kw["sep"], __file, __stack))
+        if __code.codeType == CodeType.EVAL_VARIABLE_FORGET:
+            __current_stack = __stack.last
+            for target in __code.kw["targets"]:
+                __current_stack.forget(target)
+            return RelayData.NO_RESULT
+        if __code.codeType == CodeType.EVAL_VARIABLE_SHARE:
+            __current_stack = __stack.last
+            __upper_stack = __current_stack.master
+            for target in __code.kw["targets"]:
+                __upper_stack.data[target] = __current_stack.data[target]
+            return RelayData.NO_RESULT
     except _EvalException: raise
     except HandledException: raise
     except Exception as e: raise _EvalException(e, __code.col)
@@ -639,7 +694,11 @@ def _treeMap(__source: str) -> List[LineTree]:
                 last_ident = 1
             else:
                 last_ident = looking_identify.count(first_identify)
-                eval("last" + ".childs[-1]" * (last_ident-1) + ".add_child(new)", {"last": master[-1], "new": LineTree(i, _compile(code))})
+                __looking__tree = master[-1]
+                for _ in range(last_ident-1):
+                    __looking__tree = __looking__tree.childs[-1]
+                __looking__tree.add_child(LineTree(i, _compile(code)))
+                del __looking__tree
     return master
 
 def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
@@ -735,8 +794,6 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
     except HandledException as e:
         if e.exception.__class__ == SystemExit: return ExecuteResult(ExecuteResultType.Success)
         
-        if __candy_setting["__debug_candy_interpreter"]: raise e.exception
-        
         def note(*values, sep=" ", end=""):
             e.add_note(sep.join(map(str, values)) + end)
         
@@ -747,12 +804,28 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
             note("  "+"  "+" "*(stack.col.start) + "^"*(stack.col.end-stack.col.start))
         note(e.exception.__class__.__name__ +": "+ str(e.exception))
         
-        if __candy_setting["ignore_help"]: raise
+        if not __candy_setting["ignore_help"]:
+            #notes
+            if type(e.exception) == NameError:
+                from thefuzz.process import extract as extract_similar
+                note("[Help] Did you mean '"+extract_similar(e.exception.args[0].split("'")[1], e.stack.getKeys())[0][0]+"'?")
+                if __candy_setting["__debug_candy_interpreter"]:
+                    __data_container = []
+                    for stack in e.stack.history:
+                        __data_container.append(tuple(map(str, [stack.loc, stack.line, str(stack.col.start)+":"+str(stack.col.end), ", ".join(stack.data.keys())])))
+                    __max_length_loc = max([len(__data[0]) for __data in __data_container])
+                    __max_length_line = max([len(__data[1]) for __data in __data_container])
+                    __max_length_col = max([len(__data[2]) for __data in __data_container])
+                    __data_text = map(lambda __data: ("  "
+                                           +"File \""+__data[0].ljust(__max_length_loc)+"\" "
+                                           +"line "+__data[1].ljust(__max_length_line)+" "
+                                           +"col "+__data[2].ljust(__max_length_col)+"\n"
+                                           +__data[3]+"\n"), __data_container)
+                    for __data in __data_text: note(__data)
+                        
         
-        #notes
-        if type(e.exception) == NameError:
-            from thefuzz.process import extract as extract_similar
-            note("[Help] Did you mean '"+extract_similar(e.exception.args[0].split("'")[1], e.stack.getKeys())[0][0]+"'?")
+        if __candy_setting["__debug_candy_interpreter"]:
+            raise ExceptionGroup("Candy Interpreter Error", e.exception, e.stack.history)
                 
         raise
 

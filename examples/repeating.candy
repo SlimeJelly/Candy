@@ -1,2 +1,5 @@
-set $text to input
+set text to input
+println of (text)
+
+set text to $input
 println of ($text)
