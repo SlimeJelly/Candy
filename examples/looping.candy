@@ -11,5 +11,5 @@ while (true):
         print of ($n)
     println of ("")
 
-loop (3 to (9) + (1) by 2):
+loop (3 to ((9) + (1)) by 2):
     println of (loop-value-0)

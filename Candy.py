@@ -259,8 +259,9 @@ class CodeType(Enum):
     EVAL_STRING = 102
     EVAL_BOOLEAN = 103
     EVAL_VARIABLE = 104
-    EVAL_VARIABLE_FORCE = 105
-    EVAL_RANGE = 106
+    EVAL_AUTO_FVARIABLE_FUNCTION = 105
+    EVAL_VARIABLE_GET = 106
+    EVAL_RANGE = 107
 
     EVAL_LOOP_VALUE = 110
 
@@ -438,6 +439,10 @@ def checkExpressionSyntax(__source: str) -> bool:
                                     .filter(lambda v: len(v.strip()) != 0)\
                                     .map(lambda v: v.lstrip().rstrip())\
                                     .map(lambda v: COMPILED_EXPRESSION_VARIABLE.fullmatch(v) != None))
+    if __source.count(" ") == 1:
+        splits = __source.split(" ")
+        if splits[0].endswith("'s") and checkExpressionSyntax(splits[0][:-2]) and COMPILED_EXPRESSION_NAME.fullmatch(splits[1]) != None:
+            return True
     if COMPILED_EXPRESSION_LOOP_VALUE.fullmatch(__source) != None \
         or COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(__source) != None: return True
     if (COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(__source) != None):
@@ -556,11 +561,11 @@ def _compile(expression: str, col: ColRange = None) -> Code:
                                     .map(lambda v: v.lstrip().rstrip().replace("$", "")))
                         )
         elif expression.startswith("$"):
-            return Code(CodeType.EVAL_VARIABLE_FORCE, deepcopy(col), value=expression[1:])
+            return Code(CodeType.EVAL_VARIABLE, deepcopy(col), value=expression[1:])
         elif COMPILED_EXPRESSION_RETURN.fullmatch(expression) != None:
             return Code(CodeType.EXEC_FUNCTION_RETURN, deepcopy(col), value=_compile(expression[6:].lstrip(), ColRange(col.start+7, col.end)))
         elif COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression) != None:
-            codeTypeString:str = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
+            codeTypeString: str = COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(1)
             split_result = splitArguments(COMPILED_EXPRESSION_BLOCKHOLDER.fullmatch(expression).group(2))
             if codeTypeString == "function":
                 return Code(CodeType.EXEC_FUNCTION_DEFINE, deepcopy(col), name=split_result[0][1], 
@@ -587,7 +592,8 @@ def _compile(expression: str, col: ColRange = None) -> Code:
             return Code(codeType, deepcopy(col), args=tuple(parse_result))
         
 
-
+        elif expression.split(" ")[0].endswith("'s"):
+            return Code(CodeType.EVAL_VARIABLE_GET, deepcopy(col), target=_compile(expression.split(" ")[0][:-2], ColRange(col.start, col.end-2)), value=expression.split(" ")[1])
         # 
         elif COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(expression) != None:
             match_function = COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION.fullmatch(expression)
@@ -603,7 +609,7 @@ def _compile(expression: str, col: ColRange = None) -> Code:
                     parse_result.append(_compile(item[1:-1], ColRange(__col_st+1, __col_st+len(item)-1)))
                 else: parse_result.append(item)
                 __col_st += len(item) + 1
-            return Code(CodeType.EVAL_VARIABLE, deepcopy(col), target=match_function.group(1), args=tuple(parse_result))
+            return Code(CodeType.EVAL_AUTO_FVARIABLE_FUNCTION, deepcopy(col), target=match_function.group(1), args=tuple(parse_result))
         else:
             __col_st = col.start
             i = 0
@@ -631,9 +637,10 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
         if __code.codeType == CodeType.EVAL_DECIMAL: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_STRING:  return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_BOOLEAN: return __code.kw["value"]
-        if __code.codeType == CodeType.EVAL_VARIABLE_FORCE:
-            return __stack.last.get(__code.kw["value"])
-        if __code.codeType == CodeType.EVAL_VARIABLE:
+        if __code.codeType == CodeType.EVAL_VARIABLE: return __stack.last.get(__code.kw["value"])
+        if __code.codeType == CodeType.EVAL_VARIABLE_GET:
+            return object.__getattribute__(_eval(__code.kw["target"], __file, __stack), __code.kw["value"])
+        if __code.codeType == CodeType.EVAL_AUTO_FVARIABLE_FUNCTION:
             target = __stack.last.get(__code.kw["target"])
             if type(target) != Function: return target
             arguments = tuple([_eval(arg, __file, __stack) for arg in __code.kw["args"] if isinstance(arg, Code)])
@@ -682,7 +689,7 @@ def _treeMap(__source: str) -> List[LineTree]:
             first_identify = None
             last_ident = 0
         else:
-            looking_identify:str = ""
+            looking_identify: str = ""
             code: str = ""
             for char in list(line):
                 if len(code) != 0: code += char
