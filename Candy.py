@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from types import NoneType
-from typing import Any, Callable, Dict, List, Set, Tuple, Type, Union, Iterator, Literal
+from typing import Any, Callable, Dict, Iterable, List, Set, Tuple, Type, Union, Iterator, Literal
 from dataclasses import dataclass, field
 from copy import deepcopy
 from sys import argv as __sys_argv
@@ -31,6 +31,51 @@ class Array(list):
     def collect(self, target, func): return reduce(func, self, target)
     def has(self, item):             return item in self
 
+def zip_range(iter: Iterable):
+    """
+    Make given numbers to tuple of range
+    
+    example)
+    
+    Input: [1, 2, 3, 4, 10, 11, 14, 15, 16]
+    
+    Output: [range(1, 5), range(10, 12), range(14, 17)]
+    """
+    # result = []
+    # for x in iter:
+    #     if len(result) == 0 or x != result[-1][-1] + 1:
+    #         result.append(range(x, x+1))
+    #     else:
+    #         result[-1] = range(result[-1][0], x+1)
+    if len(iter) == 0: return []
+    start = min(iter)
+    end = min(iter)
+    result = []
+    for i in iter:
+        if end + 1 == i:
+            end = i
+        else:
+            result.append(range(start, end+1))
+            start = i
+            end = i
+    
+    return result
+
+def unzip_range(iter: Iterable):
+    """
+    Make given numbers to tuple of range
+    
+    example)
+    
+    Input: [range(1, 5), range(10, 12), range(14, 17)]
+    
+    Output: [1, 2, 3, 4, 10, 11, 14, 15, 16]
+    """
+    result = []
+    for x in iter:
+        result.extend(x)
+    return result
+
 sys_argv: Array = Array(__sys_argv)
 del __sys_argv
 
@@ -41,7 +86,7 @@ __candy_file        : Union[str, NoneType]                      = sys_argv.filte
                                                                       .collect(None, lambda target, loc: loc if target == None else target)
 __candy_mode        : Literal["RUN", "COMPILE", "TERMINAL"] = "TERMINAL" if __candy_file == None else "COMPILE" if "-compile" in sys_argv else "RUN"
 __candy_setting     : Dict[str, Any]                        = {
-    "__debug_candy_interpreter": False, #FIXME: debug mode
+    "__debug_candy_interpreter": True, #FIXME: debug mode
     "ignore_help": "-ignore-help" in sys_argv,
     "timer": "-timer" in sys_argv
 }
@@ -78,6 +123,8 @@ del regxp_compile
 
 OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**", 
                    "==", "!=", "<", ">", "<=", ">=",)
+
+SPACING = (" ", "\t")
 
 class RelayData():
     def __init__(self, name: str) -> None:
@@ -159,6 +206,7 @@ class Stack():
         elif self.master != None: self.master.forget(name)
         else: raise NameError("name '"+name+"' is not defined")
 
+#TODO: 각 file의 마스터 스택을 분리
 class StackSet():
     def __init__(self, loc:str="Candy", __global: Dict[str, Any] = None) -> None:
         self.stacks: List[Stack] = [Stack(loc, 0, type=StackType.ROOT, col=ColRange(0, 0))]
@@ -639,7 +687,11 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
         if __code.codeType == CodeType.EVAL_BOOLEAN: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_VARIABLE: return __stack.last.get(__code.kw["value"])
         if __code.codeType == CodeType.EVAL_VARIABLE_GET:
-            return object.__getattribute__(_eval(__code.kw["target"], __file, __stack), __code.kw["value"])
+            target = __code.kw["value"]
+            if target in object().__dir__(): raise AttributeError("Can't access to internal data '"+target+"'")
+            result = object.__getattribute__(_eval(__code.kw["target"], __file, __stack), target)
+            if type(result) == Variable: return result.value
+            return result
         if __code.codeType == CodeType.EVAL_AUTO_FVARIABLE_FUNCTION:
             target = __stack.last.get(__code.kw["target"])
             if type(target) != Function: return target
@@ -676,7 +728,7 @@ def _eval(__code: Code, __file: str, __stack: StackSet):
     except Exception as e: raise _EvalException(e, __code.col)
 
 def _treeMap(__source: str) -> List[LineTree]:
-    __source = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
+    __source = "\n".join([__l.rstrip() for __l in __source.split("\n")])
 
     master: List[LineTree] = []
     last_ident = 0
@@ -768,21 +820,119 @@ def _run_tree(master: List[LineTree], __file: str, __stack: StackSet = None):
         except _EvalException as e: raise HandledException(e, deepcopy(__stack))
     return __result
 
-def _remove_comment(__source: str) -> str:
-    result = ""
-    for l in __source.split("\n"):
-        __is_str = False
-        if l == "": result += "\n"; continue
-        for char in list(l):
-            if char == "\"": __is_str = not __is_str
-            if char == "#" and not __is_str: break
-            else: result += char
-        result += "\n"
-    return result[:-1]
+def _wrap_source(__source: str) -> str:
+    code_deleted: List[int] = [] # list of deleted char index
+    __looking_index = 0
+    __nowline_index = 0
+    
+    result: str = ""
+    __is_line_combine = False # 줄 합치기 " \ " 여부
+    __is_str = False # 문자열 내부 여부
+    __is_str_escape = False # 문자열 내부 이스케이프 여부
+    __bracket_depth = 0 # 괄호 깊이
+    
+    __last_line_combine = False # 이전 줄이 합쳐진 줄인지 여부
+    __current_line_non_space_appeared = False # 현재 줄에 공백을 제외한 문자가 나왔는지 여부
+    __last_newLine = False # 이전 문자가 개행문자인지 여부
+    for line in __source.split("\n"):
+        __last_newLine = False
+        __current_line_non_space_appeared = False
+        __ignore_space_delete = False
+        __nowline_index = 0
+        for char in list(line):
+            if __is_str_escape: 
+                __is_str_escape = False
+            elif char == "#":
+                code_deleted.extend(range(__looking_index, __looking_index - __nowline_index + len(line)))
+                __looking_index += len(line) - __nowline_index
+                break
+            elif char == "\"":
+                __is_str = not __is_str
+            elif char == "\\":
+                __ignore_space_delete = True
+                __is_line_combine = True
+                code_deleted.extend(range(__looking_index, __looking_index - __nowline_index + len(line)))
+                __looking_index += len(line) - __nowline_index
+                break
+            elif char == "(": __bracket_depth += 1
+            elif char == ")": __bracket_depth -= 1
+            elif __last_line_combine and (not __current_line_non_space_appeared) and char in SPACING:
+                code_deleted.append(__looking_index)
+                __looking_index += 1
+                __nowline_index += 1
+                continue
+            __current_line_non_space_appeared = True
+            result += char
+            __looking_index += 1
+            __nowline_index += 1
+        if not __ignore_space_delete:
+            result = result.rstrip()
+        __last_line_combine = False
+        if __bracket_depth < 0:
+            raise SyntaxError("Found unmatched bracket at line %d"%(__source.split("\n").index(line)+1))
+        elif __bracket_depth > 0:
+            __is_line_combine = True
+        if not __is_line_combine:
+            result += "\n"
+            __last_newLine = True
+            # print(max(range(__looking_index, __looking_index - __nowline_index + len(line))))
+            code_deleted.append(__looking_index)
+        else:
+            __last_line_combine = True
+        __is_line_combine = False
+        __looking_index += 1
+    if __last_newLine:
+        result = result[:-1]
+    if len(__source) in code_deleted:
+        code_deleted.remove(len(__source))
+    code_deleted = tuple(set(code_deleted))
+    return result, zip_range(code_deleted)
 
+if __candy_setting["__debug_candy_interpreter"]:
+    def __replace_deleting_chars(code, replace_char):
+        _, branch = _wrap_source(origin_code)
+        c_list = list(code)
+        for b in branch:
+            if c_list[b] != "\n":
+                c_list[b] = replace_char
+        return "".join(c_list)
+
+origin_code = """
+set line to ("*") * (47) #문자열 ""을 47번 반복하여 line 변수에 할당
+set title to (line) + (" [Multiplication Table] ") + (line) #line 변수를 이용해 제목 문자열을 만들고, title 변수에 할당
+println of (title) #title 변수의 값을 출력
+loop ((2) to (10) by (1)): #2부터 10까지 1씩 증가하며 반복
+    loop ((1) to (10) by (1)): #1부터 10까지 1씩 증가하며 반복
+        if ((loop-value-1) == (1)): #가로줄 표시를 위한 조건문
+            print of ("| ") #"| " 출력
+        set result to (loop-value-0) \\
+            * (loop-value-1) #현재 반복값들을 곱하여 result 변수에 할당
+        set text to (asString of (loop-value-0)) \\
+                        + (" x ") \\
+                        + (asString of (loop-value-1)) \\
+                        + (" = ") \\
+                        + (asString of (result)) #현재 반복값들과 result 변수를 이용하여 문장열 생성 후 text 변수에 할당
+        if ((result) < (10)): #result가 한자리 수 일 경우, 문장열 뒤에 공백 추가
+            set text to (text) + (" ")
+        print of (text) #text 변수의 값을 출력
+        print of (" | ") #"|" 출력
+    println of ("") #가로줄이 끝난 후, 줄바꿈을 통해 다음 줄로 이동
+println of (("*") * (length of (title))) #전체 출력이 끝나면 가로줄 출력"""
+
+# println \ #print something
+#        of \ 
+#       \"Hello, World!\"
+# code, branch = _wrap_source(origin_code)
+# print(code)
+# print(branch)
+# print("&"+origin_code[7:35]+"&")
+# print(__replace_deleting_chars(origin_code, "^"))
 def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None,  __file: str = "<string>", __stack: StackSet = None, __ignoreSyntax: bool=False):
+    if type(__source) == str:
+        __source, zip_deleted_chars = _wrap_source(__source)
+        deleted_chars = unzip_range(zip_deleted_chars)
     if not __ignoreSyntax and type(__source) == str:
-        __Tsource = "\n".join([__l.rstrip() for __l in _remove_comment(__source).split("\n")])
+        __Tsource = "\n".join([__l.rstrip() for __l in __source.split("\n")])
         __syntax, __err_lines = checkSyntax(__Tsource)
         if __syntax != SyntaxResultType.Right:
             print("Found wrong syntax while parsing script: \""+__file+"\"")
@@ -790,7 +940,8 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
             return ExecuteResult(ExecuteResultType.CompileError, ("SyntaxError", __syntax), __err_lines)
     
     try:
-        if type(__source) == str: __sourceTree = _treeMap(__source)
+        if type(__source) == str:
+            __sourceTree = _treeMap(__source)
         else: __sourceTree = __source
 
         __stack = StackSet(__file, __globals)
@@ -816,23 +967,33 @@ def _exec(__source: Union[str, List[LineTree]], __globals: Dict[str, Any] = None
             if type(e.exception) == NameError:
                 from thefuzz.process import extract as extract_similar
                 note("[Help] Did you mean '"+extract_similar(e.exception.args[0].split("'")[1], e.stack.getKeys())[0][0]+"'?")
-                if __candy_setting["__debug_candy_interpreter"]:
-                    __data_container = []
-                    for stack in e.stack.history:
-                        __data_container.append(tuple(map(str, [stack.loc, stack.line, str(stack.col.start)+":"+str(stack.col.end), ", ".join(stack.data.keys())])))
-                    __max_length_loc = max([len(__data[0]) for __data in __data_container])
-                    __max_length_line = max([len(__data[1]) for __data in __data_container])
-                    __max_length_col = max([len(__data[2]) for __data in __data_container])
-                    __data_text = map(lambda __data: ("  "
-                                           +"File \""+__data[0].ljust(__max_length_loc)+"\" "
-                                           +"line "+__data[1].ljust(__max_length_line)+" "
-                                           +"col "+__data[2].ljust(__max_length_col)+"\n"
-                                           +__data[3]+"\n"), __data_container)
-                    for __data in __data_text: note(__data)
-                        
-        
         if __candy_setting["__debug_candy_interpreter"]:
-            raise ExceptionGroup("Candy Interpreter Error", e.exception, e.stack.history)
+            
+            note("Debugging Info:")
+            note("")
+            note("[Stack History]")
+            for stack in e.stack.history:
+                note("  "+"File \""+stack.loc+"\" line "+str(stack.line+1)+" col "+str(stack.col.start+1))
+            
+            note("")
+            note("[Data History]")
+            __data_container = []
+            for stack in e.stack.history:
+                __data_container.append(tuple(map(str, [stack.loc, stack.line, str(stack.col.start)+":"+str(stack.col.end), ", ".join(stack.data.keys())])))
+            __max_length_loc = max([len(__data[0]) for __data in __data_container])
+            __max_length_line = max([len(__data[1]) for __data in __data_container])
+            __max_length_col = max([len(__data[2]) for __data in __data_container])
+            __data_text = "\n".join(
+                map(lambda __data: ("  "
+                                    +"File \""+__data[0].ljust(__max_length_loc)+"\" "
+                                    +"line "+__data[1].ljust(__max_length_line)+" "
+                                    +"col "+__data[2].ljust(__max_length_col)
+                                    
+                                    +"\n"
+                                    +"      "+__data[3]+"\n"), __data_container)
+            )
+            for __data in __data_text.split("\n"): note("    "+__data)
+            
                 
         raise
 
@@ -848,18 +1009,46 @@ if __candy_mode == "RUN":
         print("\n".join(he.__notes__))
     if __candy_setting["timer"]:
         print("Time elapsed: %.6f sec"%(__time()-time_start))
+
 elif __candy_mode == "TERMINAL":
     __global = {}
     def __console_input(__prompt: str)->str:
         try: return input(__prompt)
         except KeyboardInterrupt as ki: print("^C"); raise
         except: raise
+    
+    def __remove_string(__source: str) -> str:
+        __is_string = False
+        __is_escape = False
+        result = ""
+        for char in list(__source):
+            if __is_string:
+                if __is_escape:
+                    __is_escape = False
+                elif char == "\\":
+                    __is_escape = True
+                elif char == "\"":
+                    __is_string = False
+            else:
+                if char == "\"":
+                    __is_string = True
+                else:
+                    result += char
+        return result
+    
     while True:
         try:
             __source = [__console_input(">>> ")]
+            bracket_count = 0
             while True:
                 last_spacing = len(__source[-1])-len(__source[-1].lstrip())
-                if (not _remove_comment(__source[-1]).rstrip().endswith(":")) or (len(__source) > 1 and last_spacing == 0): break
+                
+                bracket_count += (lambda text: text.count("(") - text.count(")"))(__remove_string(__source[-1]))
+                if bracket_count <= 0 \
+                    and (
+                        (not __source[-1].replace("\\", "").rstrip().endswith(":")) \
+                        or (len(__source) > 1 and last_spacing == 0)
+                    ): break
                 __source.append(__console_input("... "))
             if __candy_setting["timer"]:
                 time_start = __time()
