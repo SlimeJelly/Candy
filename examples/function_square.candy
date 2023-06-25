@@ -3,5 +3,5 @@ function square of (base) by (exponent):
         println of ("Don't do 0**0")
         return 0
     else:
-        return ($base) ** ($exponent)
+        return ($bases) ** ($exponent)
 println of (square of (2) by (3))

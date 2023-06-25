@@ -1,0 +1,10 @@
+set last_num to 1
+set num to 1
+println of (last_num)
+println of (num)
+loop (forever):
+    set temp to num
+    set num to (num) + (last_num)
+    set last_num to temp
+    println of (num)
+    wait for (1) seconds
