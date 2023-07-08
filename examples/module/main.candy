@@ -1,0 +1,6 @@
+import module
+println of (a)
+println of ($something_went_wrong)
+
+forget println
+something_went_wrong

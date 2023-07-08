@@ -1,4 +1,5 @@
 Update of Candy Alpha 12
 ===
 
-system update
+ - Added module system
+ - Code improvement

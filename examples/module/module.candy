@@ -1,0 +1,3 @@
+set a to 3
+function something_went_wrong:
+    ("a") + (3)

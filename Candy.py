@@ -33,6 +33,12 @@ class Array(list):
     def withItems(self, *items):     return self.extend(items); return self
     def collect(self, target, func): return reduce(func, self, target)
     def has(self, item):             return item in self
+    def do(self, func):              func(self); return self
+    def collect_zip(self, target, func):
+        for x in self: func(target, x)
+        return target
+    def collect_reduce(self, target, func): return reduce(func, self, target)
+    def collect(self, target, func_add): self.forEach(func_add); return target
 
 def zip_range(iter: Iterable):
     """
@@ -77,24 +83,23 @@ sys_argv: Array = Array(__sys_argv)
 del __sys_argv
 
 
-
 class CandyLangInfo(TypedDict):
-    location: str
-    folder: str
+    systemlocation: Path
+    systemfolder: Path
     interpreter: Literal["PY", "EXE"]
-    file: Union[str, NoneType]
+    file: Union[Path, NoneType]
     mode: Literal["RUN", "COMPILE", "TERMINAL"]
 
 candy_info: CandyLangInfo = {
-    "location": __file__,
-    "folder": Path(__file__).parent.absolute().__str__(),
+    "systemlocation": Path(__file__),
+    "systemfolder": Path(__file__).parent.absolute(),
     "interpreter": __file__.split(".")[-1].upper(),
     "file": sys_argv.filter (lambda loc: loc.endswith(".candy"))\
                     .map    (lambda loc: loc.replace("\\", sep).replace("/", sep))\
+                    .map    (Path)\
                     .collect(None, lambda target, loc: loc if target == None else target),
     "mode": None
 }
-
 candy_info["mode"] = "TERMINAL" if candy_info["file"] == None else "COMPILE" if "-compile" in sys_argv else "RUN"
 if candy_info["mode"] == None: raise Exception("Something went wrong")
 
@@ -102,18 +107,35 @@ del CandyLangInfo
 
 
 
+class CandyLangTextFormatSetting(TypedDict):
+    traceback: str
+    error_message: str
+    help_message: str
+    
 
 class CandyLangSystemDebugSetting(TypedDict):
     print_info: bool
+    error_system_traceback: bool
+    error_stack_history: bool
+    error_data_history: bool
 
 class CandyLangSetting(TypedDict):
+    text_format: CandyLangTextFormatSetting
     systemdebug: CandyLangSystemDebugSetting
     ignore_help: bool
     use_timer: bool
     
 candy_setting: CandyLangSetting = {
+    "text_format": {
+        "traceback": "File \"{path}\" line {line} col {col_st}:{col_ed}",
+        "error_message": "[{type}] {message}",
+        "help_message": "[Help] {message}",
+    },
     "systemdebug": {
-        "print_info": True #FIXME: debug mode
+        "print_info": True, #FIXME: debug mode
+        "error_system_traceback": True,
+        "error_stack_history": True,
+        "error_data_history": True
     },
     "ignore_help": "-ignore-help" in sys_argv,
     "timer": "-timer" in sys_argv
@@ -138,6 +160,7 @@ EXPRESSION_INTEGER = "-?[1-9][0-9]*|-?0"
 EXPRESSION_DECIMAL = "-?[0-9]*?.[0-9]+"
 COMPILED_EXPRESSION_EMPTY                = regxp_compile("[ |\t]+")
 COMPILED_EXPRESSION_NAME                 = regxp_compile(EXPRESSION_NAME)
+COMPILED_EXPRESSION_SPACE                = regxp_compile("\s*")
 COMPILED_EXPRESSION_VARIABLE_OR_FUNCTION = regxp_compile("("+EXPRESSION_NAME+")[ |\t]*([^\n]*)")
 COMPILED_EXPRESSION_VARIABLE_FORCE       = regxp_compile("\$" + EXPRESSION_NAME)
 COMPILED_EXPRESSION_VARIABLE             = regxp_compile("\$?(" + EXPRESSION_NAME + ")")
@@ -152,6 +175,7 @@ COMPILED_EXPRESSION_LOOP_VALUE           = regxp_compile("loop-value-\\d+")
 COMPILED_EXPRESSION_LOOP_CONTROL         = regxp_compile("(break|continue)")
 COMPILED_EXPRESSION_RETURN               = regxp_compile("return [^\n]*")
 COMPILED_EXPRESSION_VARIABLE_CONTROL     = regxp_compile("(forget|share)"+EXPRESSION_SPACE+"([^\n]+)")
+COMPILED_EXPRESSION_IMPORT_MODULE        = regxp_compile("import"+EXPRESSION_SPACE+"("+EXPRESSION_NAME+")("+EXPRESSION_SPACE+"as"+EXPRESSION_SPACE+"("+EXPRESSION_NAME+"))?")
 del EXPRESSION_SPACE, EXPRESSION_NAME, EXPRESSION_VARIABLE, EXPRESSION_INTEGER, EXPRESSION_DECIMAL
 del regxp_compile
 
@@ -160,11 +184,27 @@ OPERATOR_TOKENS = ("+", "-", "*", "/", "%", "//", "**",
 
 SPACING = (" ", "\t")
 
+class CandyException(Exception):
+    ...
+
+class InternalException(CandyException):
+    def __init__(self, original: Exception) -> None:
+        self.original = original
+
+class _EvalException(CandyException):
+    def __init__(self, exception: Exception, col: "ColRange") -> None:
+        self.exception = exception
+        self.col = col
+
+class HandledException(CandyException):
+    def __init__(self, exception: _EvalException, stack: "StackSet") -> None:
+        self.exception = exception.exception
+        self.stack = stack
+        self.col = exception.col
+
 class RelayData():
     def __init__(self, name: str) -> None:
         self.name = name
-    @staticmethod
-    def isRelayData(target): return isinstance(target, RelayData)
 
     EMPTY: "RelayData"
     MISSING_ARG: "RelayData" = None
@@ -212,6 +252,9 @@ class StackType(Enum):
 class ColRange():
     start: int
     end: int
+    def __iter__(self):
+        yield self.start
+        yield self.end
 
 @dataclass()
 class LoopData():
@@ -220,7 +263,7 @@ class LoopData():
 
 @dataclass()
 class Variable():
-    value: Any
+    value: "_Candy_Object"
 
 @dataclass()
 class Stack():
@@ -228,17 +271,20 @@ class Stack():
     line: int
     type: StackType
     col: ColRange
-    master: Union["Stack", NoneType] = None
+    parent: Union["Stack", NoneType] = None
     loop: LoopData = field(default_factory=LoopData)
     data: Dict[str, Variable] = field(default_factory=dict)
     def get(self, name: str):
         if name in self.data: return self.data[name].value
-        elif self.master != None: return self.master.get(name)
+        elif self.parent != None: return self.parent.get(name)
         else: raise NameError("name '"+name+"' is not defined")
     def forget(self, name: str):
-        if name in self.data: del self.data[name]
-        elif self.master != None: self.master.forget(name)
-        else: raise NameError("name '"+name+"' is not defined")
+        if name in self.data: 
+            if self.type == StackType.ROOT: raise NameError("'"+name+"' is not defined")
+        elif self.parent != None: self.parent.forget(name)
+        else: raise NameError("'"+name+"' is not defined")
+    def __str__(self) -> str:
+        return self.type.name+" at "+self.loc.name+":"+str(self.line)
 
 #TODO: 각 file의 마스터 스택을 분리
 class StackSet():
@@ -256,7 +302,7 @@ class StackSet():
         self.stacks[-1].data = __global
     def enter(self, newStack: Stack) -> None:
         self.stacks.append(newStack)
-        if len(self.stacks): self.stacks[-1].master = self.stacks[-2]
+        if len(self.stacks): self.stacks[-1].parent = self.stacks[-2]
     def exit(self) -> None:
         if len(self.stacks) <= 1: raise Exception("StackSet: cannot exit from root stack")
         del self.stacks[-1]
@@ -287,7 +333,9 @@ class Argument():
 
 class _Candy_Object():
     def __init__(self, _name: Union[str, NoneType], _type: Union[str, NoneType]="Unkown", _internal: bool=False) -> None:
+        self.__internal = _internal
         self.__str = "<"+("internal " if _internal else "")+_type+" "+_name+">"
+    def is_internal(self) -> bool: return self.__internal
     def __str__(self) -> str: return self.__str
 
 class Function(_Candy_Object):
@@ -304,9 +352,9 @@ class Function(_Candy_Object):
         if len(self.__args) != len(variables): pass # error
         if len(variables) < self.less_args: raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
         variables += (RelayData.MISSING_ARG,) * (len(self.__args) - len(variables))
-        localDict: Dict[str, Any] = {arg_slot.name:Variable(var if not RelayData.isRelayData(var) else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
+        localDict: Dict[str, Any] = {arg_slot.name:Variable(var if not isinstance(var, RelayData) else arg_slot.auto) for arg_slot, var in zip(self.__args, variables)}
         if RelayData.MISSING_ARG in localDict.values(): raise TypeError(self.name+" expected at least "+str(self.less_args)+" argument, got "+str(len(variables)))
-        innerStack = (lambda lastStack: Stack(self.origin, lastStack.line, type=StackType.FUNCTION, col=lastStack.col, master=lastStack, data=localDict))(_stack.last)
+        innerStack = (lambda lastStack: Stack(self.origin, lastStack.line, type=StackType.FUNCTION, col=lastStack.col, parent=lastStack, data=localDict))(_stack.last)
         _stack.enter(innerStack)
         v = self.func(localDict, _stack)
         _stack.exit()
@@ -347,6 +395,8 @@ class CodeType(Enum):
     
     EVAL_VARIABLE_FORGET = 130
     EVAL_VARIABLE_SHARE = 131
+    
+    EVAL_IMPORT_MODULE = 140
 
     #Exec (200~)
     #Exec - Condition (200~)
@@ -394,7 +444,7 @@ class LineTree():
 def create_function(name: str, parameters: List[Union[str, Argument]], code: List[LineTree], __origin: "Script") -> Function:
     def __func(arguments: Dict[str, Any], __stack: StackSet):
         __relay = _run_tree(code, __stack)
-        if RelayData.isRelayData(__relay) and __relay.name == "RETURN": return __relay.data
+        if isinstance(__relay, RelayData) and __relay.name == "RETURN": return __relay.data
         return __relay
     return Function(name, parameters, __func, __origin)
 
@@ -404,19 +454,6 @@ def create_function(name: str, parameters: List[Union[str, Argument]], code: Lis
 #         self.tree = tree
 #         self.colmap = colmap
 
-class InternalException(Exception):
-    ...
-
-class _EvalException(InternalException):
-    def __init__(self, exception: Exception, col: ColRange) -> None:
-        self.exception = exception
-        self.col = col
-
-class HandledException(InternalException):
-    def __init__(self, exception: _EvalException, stack: StackSet) -> None:
-        self.exception = exception.exception
-        self.stack = stack
-        self.col = exception.col
         
         
 class SyntaxResultType(Enum):
@@ -486,7 +523,7 @@ def checkExpressionSyntax(__source: str) -> bool:
         return checkExpressionSyntax(__source[1:-1])
     
     
-
+    elif COMPILED_EXPRESSION_IMPORT_MODULE.fullmatch(__source) != None: return True
     elif __source.startswith("set"):
         match_define = COMPILED_EXPRESSION_SET.fullmatch(__source)
         return match_define != None \
@@ -599,6 +636,9 @@ def _wrap_source(__source: str) -> str:
     __current_line_non_space_appeared = False # 현재 줄에 공백을 제외한 문자가 나왔는지 여부
     __last_newLine = False # 이전 문자가 개행문자인지 여부
     for line in __source.split("\n"):
+        if line == "" or COMPILED_EXPRESSION_SPACE.fullmatch(line) != None:
+            result += line + "\n"
+            continue
         __last_newLine = False
         __current_line_non_space_appeared = False
         __ignore_space_delete = False
@@ -663,6 +703,11 @@ def _parse(expression: str, col: ColRange = None) -> Code:
         elif COMPILED_EXPRESSION_BOOLEAN     .fullmatch(expression) != None: return Code(CodeType.EVAL_BOOLEAN , deepcopy(col), value=bool (expression))
         elif COMPILED_EXPRESSION_LOOP_VALUE  .fullmatch(expression) != None: return Code(CodeType.EVAL_LOOP_VALUE, deepcopy(col), index=int(expression.replace("loop-value-", "")))
         elif COMPILED_EXPRESSION_LOOP_CONTROL.fullmatch(expression) != None: return Code(CodeType.EXEC_LOOP_CONTINUE if expression=="continue" else CodeType.EXEC_LOOP_BREAK, deepcopy(col))
+        elif COMPILED_EXPRESSION_IMPORT_MODULE.fullmatch(expression) != None: 
+            _match = COMPILED_EXPRESSION_IMPORT_MODULE.fullmatch(expression)
+            target, _, rename, *_ = _match.groups() + (None, None)
+            if rename == None: rename = target
+            return Code(CodeType.EVAL_IMPORT_MODULE, deepcopy(col), target=target, rename=rename)
         __splits = splitArguments(expression)
         if len(__splits) == 5 and __splits[1][1] == "to" and __splits[3][1] == "by":
             s = col.start
@@ -681,7 +726,7 @@ def _parse(expression: str, col: ColRange = None) -> Code:
             __is_force_variable = argName[0] == '$'
 
             value = _parse(match_define.group(2), ColRange(col.start+4+len(argName)+4, col.end))
-            if RelayData.isRelayData(value): return SyntaxError()
+            if isinstance(value, RelayData): return SyntaxError()
 
             if __is_force_variable: argName = argName[1:]
             return Code(CodeType.EVAL_SET, deepcopy(col), var=argName, value=value)
@@ -819,7 +864,7 @@ class Script():
         self.__path: str = __path
         
     def fake(self, __source: str) -> None:
-        self.file: Path = Path(candy_info["location"])
+        self.file: Path = candy_info["systemfolder"]
         self.path: str = self.__path
         self.name: str = self.__path
         self.fileType = ScriptType.SCRIPT
@@ -842,8 +887,20 @@ class Script():
     def compile(self, __ignoreSyntax: bool = False) -> None:
         if self.fileType == ScriptType.SCRIPT:
             self.tree, self.deleted_chars = _compile(self.source, self.path, __ignoreSyntax)
-    def run(self, __globals: Dict[str, Any] = None):
-        return _exec(self, __globals)
+    def run(self, _globals: Dict[str,Any] = None, _stack: StackSet = None) -> Any:
+        return _exec(self, _globals, _stack)
+    @staticmethod
+    def find(target: str):
+        for folder in filter(
+            lambda x: x != None,
+            (
+                candy_info["systemfolder"],
+                (lambda x: x.parent if x != None else None)(candy_info["file"])
+            )
+        ):
+            for candy_file in folder.glob("**/*.candy"):
+                if ".".join(candy_file.name.split(".")[:-1]) == target:
+                    return Script(candy_file.__str__())
 
 def _eval(__code: Code, __stack: StackSet):
     __looking__stack = __stack.last
@@ -858,6 +915,13 @@ def _eval(__code: Code, __stack: StackSet):
         if __code.codeType == CodeType.EVAL_STRING:  return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_BOOLEAN: return __code.kw["value"]
         if __code.codeType == CodeType.EVAL_VARIABLE: return __stack.last.get(__code.kw["value"])
+        if __code.codeType == CodeType.EVAL_IMPORT_MODULE:
+            _module = Script.find(__code.kw["target"])
+            _module.load()
+            _module.compile()
+            _module.run(_stack=__stack)
+            __stack.last.parent.data.update(__stack.last.data)
+            __stack.exit()
         if __code.codeType == CodeType.EVAL_VARIABLE_GET:
             _from = _eval(__code.kw["target"], __stack)
             _attr = __code.kw["value"]
@@ -892,11 +956,12 @@ def _eval(__code: Code, __stack: StackSet):
             return RelayData.NO_RESULT
         if __code.codeType == CodeType.EVAL_VARIABLE_SHARE:
             __current_stack = __stack.last
-            __upper_stack = __current_stack.master
+            __upper_stack = __current_stack.parent
             for _attr in __code.kw["targets"]:
                 __upper_stack.data[_attr] = __current_stack.data[_attr]
             return RelayData.NO_RESULT
-    except InternalException: __is_exception_raised = True; raise
+    except InternalException: raise
+    except CandyException: __is_exception_raised = True; raise
     except Exception as e: __is_exception_raised = True; raise _EvalException(e, __code.col)
     finally:
         if not __is_exception_raised:
@@ -935,7 +1000,7 @@ def _run_tree(master: List[LineTree], __stack: StackSet = None):
                         __relay = _run_tree(tree.childs, __stack)
                 else: __IGNORE_IF = False
                 if __relay is RelayData.LOOP_CONTINUE or __relay is RelayData.LOOP_BREAK: return __relay
-                if RelayData.isRelayData(__relay) and __relay.name == "RETURN": return __relay
+                if isinstance(__relay, RelayData) and __relay.name == "RETURN": return __relay
                 del __relay
 
                 if tree.code.codeType == CodeType.EXEC_LOOP_WHILE:
@@ -943,7 +1008,7 @@ def _run_tree(master: List[LineTree], __stack: StackSet = None):
                         while_control = _run_tree(tree.childs, __stack)
                         if while_control is RelayData.LOOP_CONTINUE: continue
                         elif while_control is RelayData.LOOP_BREAK: break
-                        elif RelayData.isRelayData(while_control) and while_control.name == "RETURN": return while_control
+                        elif isinstance(while_control, RelayData) and while_control.name == "RETURN": return while_control
                 elif tree.code.codeType == CodeType.EXEC_LOOP_LOOP:
                     __iter = _eval(tree.code.kw["args"][0], __stack)
                     if type(__iter) == int: __iter = range(__iter)
@@ -954,31 +1019,36 @@ def _run_tree(master: List[LineTree], __stack: StackSet = None):
                         loop_control: RelayData = _run_tree(tree.childs, __stack)
                         if loop_control is RelayData.LOOP_CONTINUE: continue
                         elif loop_control is RelayData.LOOP_BREAK: break
-                        elif RelayData.isRelayData(loop_control) and loop_control.name == "RETURN": return loop_control
+                        elif isinstance(loop_control, RelayData) and loop_control.name == "RETURN": return loop_control
                     __looking__stack.loop.next_index -= 1
                     del __looking__stack.loop.values[__index]
                 elif tree.code.codeType == CodeType.EXEC_FUNCTION_DEFINE:
                     __looking__stack.data[tree.code.kw["name"]] = Variable(create_function(tree.code.kw["name"], tree.code.kw['tokens'], tree.childs, __looking__stack.loc))
+        except InternalException: raise
         except _EvalException as e: raise HandledException(e, deepcopy(__stack))
     return __result
 
-def _exec(__source: Script, __stack: StackSet, __globals: Dict[str, Any] = None):
+def _exec(__source: Script, __globals: Dict[str, Any] = None, __stack: Union[StackSet, None] = None):
     try:
-        __stack = StackSet(__globals)
-        __stack.enter(Stack(__source, 0, StackType.MODULE, ColRange(0, 0), __stack.last))
+        if type(__stack) != StackSet:
+            __stack = StackSet()
+        __stack.enter(Stack(__source, 0, StackType.MODULE, ColRange(0, 0), __stack.last, data=(__globals if __globals != None else {})))
         __result = _run_tree(__source.tree, __stack)
-    
         return __result
-
+    except InternalException: raise
     except HandledException as e:
         if e.exception.__class__ == SystemExit: raise SystemExit
         
         def note(*values, sep=" ", end=""):
             e.add_note(sep.join(map(str, values)) + end)
+            
+        __tb_format = candy_setting["text_format"]["traceback"]
+        def format_traceback(path, line, col_st, col_ed):
+            return __tb_format.format(path=path, line=line, col_st=col_st, col_ed=col_ed)
         
         note("Traceback:")
         for stack in e.stack.history:
-            note("  "+"File \""+stack.loc.path+"\" line "+str(stack.line+1))
+            note("  "+format_traceback(stack.loc.path, stack.line+1, *stack.col))
             note("  "+"  "+stack.loc.source.split("\n")[stack.line].lstrip())
             note("  "+"  "+" "*(stack.col.start) + "^"*(stack.col.end-stack.col.start))
         note(e.exception.__class__.__name__ +": "+ str(e.exception))
@@ -987,8 +1057,11 @@ def _exec(__source: Script, __stack: StackSet, __globals: Dict[str, Any] = None)
             #notes
             if type(e.exception) == NameError:
                 note("[Help] Did you mean '"+extract_similar(e.exception.args[0].split("'")[1], e.stack.getKeys())[0][0]+"'?")
-        if candy_setting["systemdebug"]["print_info"]:
+        if candy_setting["systemdebug"]["error_system_traceback"]\
+            or candy_setting["systemdebug"]["error_stack_history"]\
+            or candy_setting["systemdebug"]["error_data_history"]:
             note("\nDebugging Info:")
+        if candy_setting["systemdebug"]["error_system_traceback"]:
             
             note("")
             note("[System History]")
@@ -997,25 +1070,33 @@ def _exec(__source: Script, __stack: StackSet, __globals: Dict[str, Any] = None)
             for exc in history_string:
                 if exc == "": break
                 note("  "+exc)
-            
+        if candy_setting["systemdebug"]["error_stack_history"]:
             note("")
             note("[Stack History]")
             for stack in e.stack.history:
-                note("  "+"File \""+stack.loc.path+"\" line "+str(stack.line+1)+" col "+str(stack.col.start+1))
-            
+                note("  "+format_traceback(stack.loc.path, str(stack.line+1), *stack.col))
+        if candy_setting["systemdebug"]["error_data_history"]:
             note("")
             note("[Data History]")
             __data_container = []
             for stack in e.stack.history:
-                __data_container.append(tuple(map(str, [stack.loc.path, stack.line, str(stack.col.start)+":"+str(stack.col.end), ", ".join(stack.data.keys())])))
+                __data_container.append(
+                    tuple(
+                        map(
+                            lambda t: (
+                                lambda i, v: v if i == 2 else str(v)
+                            )(*t),
+                            enumerate([stack.loc.path, stack.line, stack.col, ", ".join(stack.data.keys())])
+                        )
+                    )
+                )
             __max_length_loc = max([len(__data[0]) for __data in __data_container])
             __max_length_line = max([len(__data[1]) for __data in __data_container])
-            __max_length_col = max([len(__data[2]) for __data in __data_container])
             __data_text = "\n".join(
                 map(lambda __data: ("  "
-                                    +"File \""+__data[0].ljust(__max_length_loc)+"\" "
-                                    +"line "+__data[1].ljust(__max_length_line)+" "
-                                    +"col "+__data[2].ljust(__max_length_col)
+                                    +format_traceback( __data[0].ljust(__max_length_loc ), 
+                                                       __data[1].ljust(__max_length_line),
+                                                      *__data[2]                          )
                                     
                                     +"\n"
                                     +"    "+__data[3]
@@ -1023,7 +1104,7 @@ def _exec(__source: Script, __stack: StackSet, __globals: Dict[str, Any] = None)
             )
             note(__data_text)
             
-                
+
         raise
     
 _master_script = Script("<Candy>")
@@ -1058,7 +1139,7 @@ _dict["forever"]  = create_py_function("forever",  [], Forever)
 
 if candy_info["mode"] == "RUN":
     __source = ""
-    master_script = Script(candy_info["file"])
+    master_script = Script(str(candy_info["file"]))
     master_script.load()
     master_script.compile()
     if candy_setting["timer"]:
@@ -1112,12 +1193,13 @@ elif candy_info["mode"] == "TERMINAL":
             if candy_setting["timer"]:
                 time_start = __time()
             __result = terminal_script.run(__global)
-            if not (RelayData.isRelayData(__result)): print(__result.args[0])
+            if not (isinstance(__result, RelayData)) and (__result != None): print(__result)
             if candy_setting["timer"]:
                 print("Time elapsed: %.6f sec"%(__time()-time_start))
         except HandledException as he: print("\n".join(he.__notes__))
         except EOFError as eofe: break
         except KeyboardInterrupt as ki: pass
+        except SyntaxError as se: print("SyntaxError:", se); pass
         except Exception as e:
             print("\nAn internal error has occurred.")
             raise

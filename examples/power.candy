@@ -1,0 +1,3 @@
+set base to asInt of (input) #base=3
+set result to (base) ** (2) #base**2 = 9
+println of (result) #9
